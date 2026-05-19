@@ -229,10 +229,12 @@ export default function App() {
 
   const startGestureGrowth = useCallback(() => {
     treeTriggeredRef.current = true;
+    treeGrowthRef.current = Math.max(treeGrowthRef.current, 0.08);
     setTreeTriggered(true);
+    setTreeGrowth(treeGrowthRef.current);
     setGestureActive(true);
     setMode('flow');
-    intensityRef.current = Math.max(intensityRef.current, 0.55);
+    intensityRef.current = Math.max(intensityRef.current, 0.72);
     syncToFirebase({
       treeGrowth: treeGrowthRef.current,
       gestureActive: true,
@@ -245,13 +247,13 @@ export default function App() {
   const animate = useCallback(() => {
     setAudioData(getAudioData());
 
-    const handGestureActive = isCameraActive && hasHandDetected && openHandCount > 0;
+    const handGestureActive = isCameraActive && hasHandDetected && isHandOpen && openHandCount > 0;
     if (handGestureActive && !treeTriggeredRef.current) {
       startGestureGrowth();
     }
 
     if (treeTriggeredRef.current) {
-      const speed = 0.006 + (handGestureActive ? openHandCount * 0.004 : 0.002);
+      const speed = 0.01 + (handGestureActive ? openHandCount * 0.009 : 0.004);
       treeGrowthRef.current = Math.min(1, treeGrowthRef.current + speed);
       setTreeGrowth(treeGrowthRef.current);
     }
@@ -262,7 +264,7 @@ export default function App() {
     setIntensity(intensityRef.current);
 
     requestRef.current = requestAnimationFrame(animate);
-  }, [getAudioData, hasHandDetected, isCameraActive, openHandCount, startGestureGrowth]);
+  }, [getAudioData, hasHandDetected, isCameraActive, isHandOpen, openHandCount, startGestureGrowth]);
 
   useEffect(() => {
     requestRef.current = requestAnimationFrame(animate);
