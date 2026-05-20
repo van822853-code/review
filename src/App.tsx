@@ -4,24 +4,30 @@ import {
   CheckCircle2,
   ClipboardCheck,
   Clock,
+  Cloud,
+  CloudOff,
   Download,
-  Eye,
   EyeOff,
   Laptop,
   ListChecks,
   Monitor,
   Music,
+  Pencil,
   Plus,
   Printer,
   Radio,
   RotateCcw,
+  Save,
   ScreenShare,
+  Share2,
   Sparkles,
   Trash2,
   UserRound,
   Users,
   Volume2,
 } from 'lucide-react';
+import { doc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore';
+import { db, handleFirestoreError, isFirebaseConfigured, OperationType } from './lib/firebase';
 
 type GroupKey = 'music' | 'visual' | 'interaction' | 'all' | 'ai' | 'control';
 type ScreenType = 'all' | 'main' | 'laptop' | 'main-laptop' | 'onsite';
@@ -80,7 +86,10 @@ type MemoState = {
   audience: AudienceRow[];
 };
 
+type SyncStatus = 'local' | 'connecting' | 'synced' | 'dirty' | 'saving' | 'remote-pending' | 'error' | 'copied';
+
 const STORAGE_KEY = 'ensemble-field-manual-v5';
+const PLAN_DOC_PATH = ['showPlans', 'ensemble-flow'];
 
 const groupMeta: Record<
   GroupKey,
@@ -433,11 +442,87 @@ function buildTimeSlots<T>(items: T[], startSeconds: number, getDuration: (item:
 function App() {
   const [data, setData] = useState<MemoState>(loadState);
   const [activeTab, setActiveTab] = useState<TabKey>('timeline');
-  const [isEditing, setIsEditing] = useState(true);
+  const [isEditing, setIsEditing] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(isFirebaseConfigured ? 'connecting' : 'local');
+  const [syncMessage, setSyncMessage] = useState(isFirebaseConfigured ? '正在连接云端' : '本地模式');
+  const [lastSavedAt, setLastSavedAt] = useState('');
+  const hasMountedRef = useRef(false);
+  const applyingRemoteRef = useRef(false);
+  const isDirtyRef = useRef(false);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    if (!hasMountedRef.current) {
+      hasMountedRef.current = true;
+      return;
+    }
+
+    if (applyingRemoteRef.current) {
+      applyingRemoteRef.current = false;
+      isDirtyRef.current = false;
+      setIsDirty(false);
+      return;
+    }
+
+    isDirtyRef.current = true;
+    setIsDirty(true);
+    setSyncStatus(isFirebaseConfigured ? 'dirty' : 'local');
+    setSyncMessage(isFirebaseConfigured ? '有未保存修改' : '修改已保存在本机');
   }, [data]);
+
+  useEffect(() => {
+    if (!db) {
+      setSyncStatus('local');
+      setSyncMessage('本地模式：配置 Firebase 后可云端同步');
+      return;
+    }
+
+    setSyncStatus('connecting');
+    setSyncMessage('正在连接云端');
+    const planRef = doc(db, PLAN_DOC_PATH[0], PLAN_DOC_PATH[1]);
+    const unsubscribe = onSnapshot(
+      planRef,
+      (snapshot) => {
+        if (!snapshot.exists()) {
+          setSyncStatus('dirty');
+          setSyncMessage('云端暂无数据，点击保存即可创建共享版本');
+          return;
+        }
+
+        const remote = snapshot.data();
+        const remoteData = remote.data as MemoState | undefined;
+        const updatedAt = remote.updatedAt;
+        if (updatedAt?.toDate) {
+          setLastSavedAt(updatedAt.toDate().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+        }
+
+        if (!remoteData) {
+          setSyncStatus('synced');
+          setSyncMessage('已连接云端');
+          return;
+        }
+
+        if (isDirtyRef.current) {
+          setSyncStatus('remote-pending');
+          setSyncMessage('云端有更新，保存或退出编辑后再同步');
+          return;
+        }
+
+        applyingRemoteRef.current = true;
+        setData({ ...defaultState, ...remoteData });
+        setSyncStatus('synced');
+        setSyncMessage('已实时同步');
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.GET, PLAN_DOC_PATH.join('/'));
+        setSyncStatus('error');
+        setSyncMessage('云端连接失败，仍可本地编辑');
+      },
+    );
+
+    return () => unsubscribe();
+  }, []);
 
   const checklistProgress = useMemo(() => {
     const items = data.checklist.flatMap((group) => group.items);
@@ -448,6 +533,52 @@ function App() {
   const resetAll = () => {
     if (!window.confirm('确定要重置为默认内容吗？当前编辑内容会被覆盖。')) return;
     setData(defaultState);
+  };
+
+  const saveToCloud = async () => {
+    if (!db) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      isDirtyRef.current = false;
+      setIsDirty(false);
+      setSyncStatus('local');
+      setSyncMessage('已保存到本机；配置 Firebase 后可共享');
+      return;
+    }
+
+    setSyncStatus('saving');
+    setSyncMessage('正在保存到云端');
+    try {
+      await setDoc(
+        doc(db, PLAN_DOC_PATH[0], PLAN_DOC_PATH[1]),
+        {
+          data,
+          updatedAt: serverTimestamp(),
+          title: '《合奏 Ensemble》流程安排',
+          schemaVersion: STORAGE_KEY,
+        },
+        { merge: true },
+      );
+      isDirtyRef.current = false;
+      setIsDirty(false);
+      setSyncStatus('synced');
+      setSyncMessage('已保存，其他人会实时更新');
+      setIsEditing(false);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, PLAN_DOC_PATH.join('/'));
+      setSyncStatus('error');
+      setSyncMessage('保存失败，请检查 Firebase 权限');
+    }
+  };
+
+  const copyShareLink = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setSyncStatus('copied');
+      setSyncMessage('已复制当前链接');
+    } catch {
+      setSyncStatus(isFirebaseConfigured ? (isDirty ? 'dirty' : 'synced') : 'local');
+      setSyncMessage('复制失败，请手动复制浏览器地址');
+    }
   };
 
   const exportJson = () => {
@@ -465,7 +596,14 @@ function App() {
       <DecorativeBackground />
       <Header
         isEditing={isEditing}
-        onToggleEdit={() => setIsEditing((value) => !value)}
+        isDirty={isDirty}
+        syncStatus={syncStatus}
+        syncMessage={syncMessage}
+        lastSavedAt={lastSavedAt}
+        onEdit={() => setIsEditing(true)}
+        onView={() => setIsEditing(false)}
+        onSave={saveToCloud}
+        onShare={copyShareLink}
         onReset={resetAll}
         onExport={exportJson}
         onPrint={() => window.print()}
@@ -524,19 +662,36 @@ function DecorativeBackground() {
 
 function Header({
   isEditing,
+  isDirty,
+  syncStatus,
+  syncMessage,
+  lastSavedAt,
+  onEdit,
+  onView,
+  onSave,
+  onShare,
   progress,
-  onToggleEdit,
   onReset,
   onExport,
   onPrint,
 }: {
   isEditing: boolean;
+  isDirty: boolean;
+  syncStatus: SyncStatus;
+  syncMessage: string;
+  lastSavedAt: string;
   progress: { done: number; total: number; percent: number };
-  onToggleEdit: () => void;
+  onEdit: () => void;
+  onView: () => void;
+  onSave: () => void;
+  onShare: () => void;
   onReset: () => void;
   onExport: () => void;
   onPrint: () => void;
 }) {
+  const cloudConnected = syncStatus !== 'local' && syncStatus !== 'error';
+  const SyncIcon = cloudConnected ? Cloud : CloudOff;
+
   return (
     <header className="relative z-10 border-b border-white/80 bg-white/70 backdrop-blur-xl print:border-b print:bg-white">
       <div className="mx-auto flex max-w-[1540px] flex-col gap-4 px-4 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
@@ -550,6 +705,13 @@ function Header({
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 print:hidden">
+          <div className={`mr-1 min-w-52 rounded-full border px-3 py-2 ${syncStatus === 'error' ? 'border-rose-200 bg-rose-50 text-rose-700' : syncStatus === 'dirty' || syncStatus === 'remote-pending' ? 'border-orange-200 bg-orange-50 text-orange-700' : 'border-violet-200 bg-white text-slate-600'}`}>
+            <div className="flex items-center gap-2 text-xs font-black">
+              <SyncIcon className="h-4 w-4" />
+              <span>{syncMessage}</span>
+            </div>
+            {lastSavedAt && <p className="mt-1 font-mono text-[11px] font-bold opacity-70">上次保存 {lastSavedAt}</p>}
+          </div>
           <div className="mr-1 min-w-40 rounded-full border border-violet-200 bg-white px-3 py-2">
             <div className="flex items-center justify-between gap-3 text-xs font-semibold text-slate-500">
               <span>内容自检</span>
@@ -557,9 +719,26 @@ function Header({
             </div>
             <ProgressBar percent={progress.percent} />
           </div>
-          <button className="action-btn bg-blue-950 text-white hover:bg-blue-900" onClick={onToggleEdit}>
-            {isEditing ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
-            {isEditing ? '切到只读' : '切到编辑'}
+          {isEditing ? (
+            <>
+              <button className="action-btn" onClick={onView}>
+                <EyeOff className="h-4 w-4" />
+                退出编辑
+              </button>
+              <button className="action-btn bg-blue-950 text-white hover:bg-blue-900" onClick={onSave}>
+                <Save className="h-4 w-4" />
+                {isDirty ? '保存' : '已保存'}
+              </button>
+            </>
+          ) : (
+            <button className="action-btn bg-blue-950 text-white hover:bg-blue-900" onClick={onEdit}>
+              <Pencil className="h-4 w-4" />
+              修改
+            </button>
+          )}
+          <button className="action-btn" onClick={onShare}>
+            <Share2 className="h-4 w-4" />
+            共享链接
           </button>
           <button className="action-btn" onClick={onExport}>
             <Download className="h-4 w-4" />
