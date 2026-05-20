@@ -10,6 +10,7 @@ import {
   EyeOff,
   Laptop,
   ListChecks,
+  MinusCircle,
   Monitor,
   Music,
   Pencil,
@@ -30,7 +31,7 @@ import { doc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore';
 import { db, handleFirestoreError, isFirebaseConfigured, OperationType } from './lib/firebase';
 
 type GroupKey = 'music' | 'visual' | 'interaction' | 'all' | 'ai' | 'control';
-type ScreenType = 'all' | 'main' | 'laptop' | 'main-laptop' | 'onsite';
+type ScreenType = 'all' | 'main' | 'laptop' | 'main-laptop' | 'none' | 'onsite';
 type TabKey = 'timeline' | 'staff' | 'checklist' | 'audience';
 type OwnerMap = Partial<Record<GroupKey, string>>;
 
@@ -164,6 +165,7 @@ const screenLabels: Record<ScreenType, string> = {
   main: '大屏幕',
   laptop: '小电脑',
   'main-laptop': '大屏幕 + 小电脑',
+  none: '无屏幕显示',
   onsite: '视现场情况',
 };
 
@@ -934,7 +936,6 @@ function PreheatTimeline({
           <PreheatTimelineItem
             key={slot.item.id}
             item={slot.item}
-            timeRange={slot.range}
             isEditing={isEditing}
             showOwners={showOwners}
             onChange={(next) => onChange(items.map((current, currentIndex) => (currentIndex === index ? next : current)))}
@@ -948,14 +949,12 @@ function PreheatTimeline({
 
 function PreheatTimelineItem({
   item,
-  timeRange,
   isEditing,
   showOwners,
   onChange,
   onDelete,
 }: {
   item: PreheatItem;
-  timeRange: string;
   isEditing: boolean;
   showOwners: boolean;
   onChange: (item: PreheatItem) => void;
@@ -973,7 +972,6 @@ function PreheatTimelineItem({
         <div className="min-w-0 flex-1">
           {isEditing ? (
             <div className="space-y-2">
-              <div className="rounded-xl bg-blue-50 px-3 py-2 font-mono text-xs font-black text-blue-800">{timeRange}</div>
               <select className="field" value={item.group} onChange={(event) => onChange({ ...item, group: event.target.value as GroupKey })}>
                 {preheatGroups.map((group) => <option key={group} value={group}>{groupMeta[group].label}</option>)}
               </select>
@@ -999,7 +997,6 @@ function PreheatTimelineItem({
               <GroupTag group={item.group} />
               {!showOwners ? (
                 <>
-                  <p className="mt-2 rounded-full bg-blue-50 px-3 py-1 font-mono text-xs font-black text-blue-800">{timeRange}</p>
                   <p className="mt-2 font-black text-slate-900">{item.task}</p>
                   <p className="mt-1 font-mono text-xs font-bold text-violet-700">{item.duration}</p>
                   {item.note && <p className="mt-1 text-sm font-semibold text-slate-500">{item.note}</p>}
@@ -1662,9 +1659,9 @@ function EditableText({ value, onChange, placeholder = '', compact = false }: { 
 }
 
 function ScreenIcon({ type }: { type: ScreenType }) {
-  const Icon = type === 'laptop' ? Laptop : type === 'main' ? Monitor : type === 'main-laptop' ? ScreenShare : Monitor;
+  const Icon = type === 'none' ? MinusCircle : type === 'laptop' ? Laptop : type === 'main' ? Monitor : type === 'main-laptop' ? ScreenShare : Monitor;
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-blue-800 ring-1 ring-blue-100">
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-black ring-1 ${type === 'none' ? 'bg-slate-50 text-slate-600 ring-slate-200' : 'bg-blue-50 text-blue-800 ring-blue-100'}`}>
       <Icon className="h-3.5 w-3.5" />
       {screenLabels[type]}
     </span>
