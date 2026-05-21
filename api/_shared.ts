@@ -78,40 +78,66 @@ export function clearAdminCookie(res: VercelResponse) {
 
 function parseServiceAccount() {
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  if (!raw) return null;
-
-  const decoded = raw.trim().startsWith("{")
-    ? raw
-    : Buffer.from(raw, "base64").toString("utf8");
-  const serviceAccount = JSON.parse(decoded);
-  if (typeof serviceAccount.private_key === "string") {
-    serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, "\n");
+  if (!raw) {
+    console.warn("⚠️ [FIREBASE DEBUG] FIREBASE_SERVICE_ACCOUNT_JSON 未配置");
+    return null;
   }
 
-  return serviceAccount;
+  try {
+    const decoded = raw.trim().startsWith("{")
+      ? raw
+      : Buffer.from(raw, "base64").toString("utf8");
+    const serviceAccount = JSON.parse(decoded);
+    console.log("✅ [FIREBASE DEBUG] 成功解析 FIREBASE_SERVICE_ACCOUNT_JSON");
+    console.log("   项目ID:", serviceAccount?.project_id);
+    if (typeof serviceAccount.private_key === "string") {
+      serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, "\n");
+    }
+    return serviceAccount;
+  } catch (error) {
+    console.error("❌ [FIREBASE DEBUG] FIREBASE_SERVICE_ACCOUNT_JSON 解析失败:", error);
+    return null;
+  }
 }
 
 export function getAdminDb(): Firestore | null {
   try {
     if (!getApps().length) {
+      console.log("🔍 [FIREBASE DEBUG] 初始化 Firebase Admin...");
       const serviceAccount = parseServiceAccount();
+      
       const projectId =
         process.env.FIREBASE_PROJECT_ID ||
         process.env.GOOGLE_CLOUD_PROJECT ||
         process.env.GCLOUD_PROJECT ||
         process.env.GCP_PROJECT ||
         serviceAccount?.project_id;
-      if (!serviceAccount && !projectId) return null;
+      
+      console.log("   FIREBASE_PROJECT_ID:", process.env.FIREBASE_PROJECT_ID);
+      console.log("   GOOGLE_CLOUD_PROJECT:", process.env.GOOGLE_CLOUD_PROJECT);
+      console.log("   GCLOUD_PROJECT:", process.env.GCLOUD_PROJECT);
+      console.log("   GCP_PROJECT:", process.env.GCP_PROJECT);
+      console.log("   从 service account 获取的项目ID:", serviceAccount?.project_id);
+      console.log("   最终使用的项目ID:", projectId);
+      console.log("   serviceAccount 存在?", Boolean(serviceAccount));
+      
+      if (!serviceAccount && !projectId) {
+        console.error("❌ [FIREBASE DEBUG] 无可用的 serviceAccount 且无 projectId");
+        return null;
+      }
 
       initializeApp({
         credential: serviceAccount ? cert(serviceAccount) : applicationDefault(),
         projectId,
       });
+      console.log("✅ [FIREBASE DEBUG] Firebase Admin 初始化成功");
+    } else {
+      console.log("✅ [FIREBASE DEBUG] Firebase Admin 已初始化，复用现有实例");
     }
 
     return getFirestore();
   } catch (error) {
-    console.warn("Firebase Admin is not configured; API persistence is unavailable.", error);
+    console.error("❌ [FIREBASE DEBUG] Firebase Admin 初始化失败:", error);
     return null;
   }
 }
