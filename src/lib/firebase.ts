@@ -11,7 +11,14 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
-export const isFirebaseConfigured = Object.values(firebaseConfig).every(Boolean);
+function isUsableFirebaseValue(value: unknown) {
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  return !/(^MY_|^YOUR_|_HERE$|PROJECT_ID|FIREBASE_API_KEY|FIREBASE_APP_ID|MESSAGING_SENDER_ID|MY_PROJECT)/i.test(trimmed);
+}
+
+export const isFirebaseConfigured = Object.values(firebaseConfig).every(isUsableFirebaseValue);
 
 const app = isFirebaseConfigured ? initializeApp(firebaseConfig) : null;
 const databaseId = import.meta.env.VITE_FIREBASE_DATABASE_ID;
@@ -32,7 +39,7 @@ async function testConnection() {
   } catch (error) {
     console.error("Firebase connection error:", error);
     if(error instanceof Error && error.message.includes('the client is offline')) {
-      console.error("Please check your Firebase configuration or network status.");
+      console.error("Please check your Firebase configuration, Firestore rules, or network status.");
     }
   }
 }
