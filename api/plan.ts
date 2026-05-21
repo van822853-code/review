@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { FieldValue } from "firebase-admin/firestore";
-import { getAdminDb, isAdminRequest, methodNotAllowed, PLAN_DOC_PATH, readPlan, STORAGE_KEY } from "./_shared";
+import { getAdminDb, isAdminRequest, methodNotAllowed, PLAN_DOC_PATH, readPlan, STORAGE_KEY } from "./_shared.js";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === "GET") {

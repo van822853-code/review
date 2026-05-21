@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { clearAdminCookie, methodNotAllowed } from "../_shared";
+import { clearAdminCookie, methodNotAllowed } from "../_shared.js";
 
 export default function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") {

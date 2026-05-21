@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { isAdminRequest, methodNotAllowed } from "../_shared";
+import { isAdminRequest, methodNotAllowed } from "../_shared.js";
 
 export default function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "GET") {
