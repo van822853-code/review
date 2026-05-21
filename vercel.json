@@ -3,6 +3,18 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/api/admin/login",
+      "destination": "/api/admin-login"
+    },
+    {
+      "source": "/api/admin/logout",
+      "destination": "/api/admin-logout"
+    },
+    {
+      "source": "/api/admin/session",
+      "destination": "/api/admin-session"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/$1"
     },
