@@ -2,9 +2,10 @@ import express from "express";
 import crypto from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
+import { put } from "@vercel/blob";
 import { createServer as createViteServer } from "vite";
 import { initializeApp, applicationDefault, cert, getApps } from "firebase-admin/app";
-import { getFirestore, FieldValue, type Firestore } from "firebase-admin/firestore";
+import { getFirestore, FieldValue, type DocumentData, type Firestore } from "firebase-admin/firestore";
 import "dotenv/config";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -12,6 +13,8 @@ const __dirname = path.dirname(__filename);
 const PLAN_DOC_PATH = ["showPlans", "ensemble-flow"] as const;
 const SESSION_COOKIE = "show_plan_admin";
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 12;
+const REFLECTIONS_COLLECTION = process.env.FIREBASE_REFLECTIONS_COLLECTION || "courseReflections";
+const MAX_REFLECTION_UPLOAD_BYTES = process.env.MAX_REFLECTION_UPLOAD_BYTES || `${250 * 1024 * 1024}`;
 
 function normalizeAdminPassword(value: unknown) {
   if (typeof value !== "string") return "";
@@ -181,6 +184,28 @@ async function readPlan() {
   return snapshot.exists ? snapshot.data() : null;
 }
 
+function sanitizeFileName(value: string) {
+  const decoded = decodeURIComponent(value || "reflection-upload");
+  const extension = path.extname(decoded).slice(0, 12);
+  const baseName = path
+    .basename(decoded, extension)
+    .replace(/[^a-z0-9._-]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return `${baseName || "reflection"}${extension || ".bin"}`;
+}
+
+function serializeReflection(id: string, data: DocumentData) {
+  return {
+    id,
+    name: String(data.name || ""),
+    note: String(data.note || ""),
+    audioUrl: String(data.audioUrl || ""),
+    mediaType: String(data.mediaType || ""),
+    timestamp: String(data.timestamp || new Date(0).toISOString()),
+  };
+}
+
 async function startServer() {
   const app = express();
   const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -256,6 +281,97 @@ async function startServer() {
     } catch (error) {
       console.error("Failed to save plan", error);
       res.status(500).json({ error: "Failed to save plan" });
+    }
+  });
+
+  app.post(
+    "/api/upload",
+    express.raw({ type: ["audio/*", "video/*"], limit: MAX_REFLECTION_UPLOAD_BYTES }),
+    async (req, res) => {
+      try {
+        const contentType = req.headers["content-type"] || "application/octet-stream";
+        if (!String(contentType).startsWith("audio/") && !String(contentType).startsWith("video/")) {
+          res.status(400).json({ error: "请上传音频或视频文件" });
+          return;
+        }
+
+        const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || "");
+        if (!body.length) {
+          res.status(400).json({ error: "没有收到文件内容" });
+          return;
+        }
+
+        const fileName = sanitizeFileName(String(req.headers["x-file-name"] || ""));
+        const blob = await put(`reflections/${Date.now()}-${fileName}`, body, {
+          access: "public",
+          contentType: String(contentType),
+          addRandomSuffix: true,
+        });
+
+        res.json({
+          url: blob.url,
+          mediaType: String(contentType),
+          size: body.length,
+        });
+      } catch (error) {
+        res.status(500).json({ error: error instanceof Error ? error.message : "上传失败" });
+      }
+    },
+  );
+
+  app.get("/api/reflections", async (req, res) => {
+    const db = getAdminDb();
+    if (!db) {
+      res.status(503).json({ error: "Firebase Admin is not configured" });
+      return;
+    }
+
+    try {
+      const snapshot = await db.collection(REFLECTIONS_COLLECTION).orderBy("timestamp", "desc").limit(120).get();
+      res.json({ reflections: snapshot.docs.map((doc) => serializeReflection(doc.id, doc.data())) });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : "服务器错误" });
+    }
+  });
+
+  app.post("/api/reflections", async (req, res) => {
+    const db = getAdminDb();
+    if (!db) {
+      res.status(503).json({ error: "Firebase Admin is not configured" });
+      return;
+    }
+
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+    const note = typeof req.body?.note === "string" ? req.body.note.trim() : "";
+    const audioUrl = typeof req.body?.audioUrl === "string" ? req.body.audioUrl.trim() : "";
+    const mediaType = typeof req.body?.mediaType === "string" ? req.body.mediaType.trim() : "application/octet-stream";
+
+    if (!name) {
+      res.status(400).json({ error: "请输入学生姓名" });
+      return;
+    }
+    if (!audioUrl || !/^https:\/\/.+/i.test(audioUrl)) {
+      res.status(400).json({ error: "缺少有效的 audioUrl" });
+      return;
+    }
+
+    try {
+      const timestamp = new Date().toISOString();
+      const ref = db.collection(REFLECTIONS_COLLECTION).doc();
+      const reflection = {
+        id: ref.id,
+        name,
+        note,
+        audioUrl,
+        mediaType,
+        timestamp,
+        createdAt: FieldValue.serverTimestamp(),
+        requestId: crypto.randomUUID(),
+      };
+      await ref.set(reflection);
+      res.status(201).json({ reflection: serializeReflection(ref.id, reflection) });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : "服务器错误" });
     }
   });
 

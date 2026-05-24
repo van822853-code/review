@@ -1,24 +1,30 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# 回响
 
-# Run and deploy your AI Studio app
+课程总结播放与上传页面。学生填写姓名，选择视频或音频文件后，文件会先上传到部署环境绑定的 Vercel Blob；上传成功返回的公开 URL 会自动写入表单状态；提交表单后，姓名、说明文字、`audioUrl` 和媒体类型会写入 Firebase Firestore。
 
-This contains everything you need to run your app locally.
+## 本地运行
 
-View your app in AI Studio: https://ai.studio/apps/328f1f1f-1bc9-4087-b227-2d41af8a6280
+1. 安装依赖：
+   ```bash
+   npm install
+   ```
+2. 复制环境变量模板：
+   ```bash
+   cp .env.example .env.local
+   ```
+3. 配置服务端环境变量：
+   ```bash
+   BLOB_READ_WRITE_TOKEN="vercel_blob_rw_xxx"
+   FIREBASE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}'
+   FIREBASE_REFLECTIONS_COLLECTION="courseReflections"
+   ```
+4. 启动：
+   ```bash
+   npm run dev
+   ```
 
-## Run Locally
+## 部署说明
 
-**Prerequisites:**  Node.js
+在 Vercel 项目里添加 `BLOB_READ_WRITE_TOKEN`。如果希望每个学生上传到自己的 Vercel Blob，需要让每个学生使用自己 Vercel 项目的 Blob token 部署同一套页面。
 
-
-1. Install dependencies:
-   `npm install`
-2. Copy [.env.example](.env.example) to `.env.local`
-3. Optional: set the `VITE_FIREBASE_*` values in `.env.local` to enable multi-screen sync
-4. Optional: set `GEMINI_API_KEY` if you are running this through AI Studio
-5. Run the app:
-   `npm run dev`
-
-Without Firebase values, the app still runs locally as a single-screen preview and shows sync as disabled.
+Firestore 写入使用 Firebase Admin SDK，因此还需要在部署环境中配置 `FIREBASE_SERVICE_ACCOUNT_JSON`。默认集合名是 `courseReflections`，可通过 `FIREBASE_REFLECTIONS_COLLECTION` 修改。
