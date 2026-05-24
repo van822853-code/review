@@ -1,6 +1,6 @@
 # 回响
 
-课程总结播放与上传页面。`/` 是播放界面，`/upload` 是学生上传界面。学生填写姓名，选择视频或音频文件后，浏览器会通过 Vercel Blob client upload 直接上传到部署环境绑定的 Blob；上传成功返回的公开 URL 会自动写入表单状态；提交表单后，姓名、说明文字、`audioUrl` 和媒体类型会写入 Firebase Firestore。
+课程总结播放与上传页面。`/` 是播放界面，`/upload` 是学生上传界面。学生填写姓名后开启前置摄像头录制课程总结；前端会用 canvas 把视频压缩到最高 720p，显示生成文件体积，再通过 Vercel Blob client upload 直接上传到部署环境绑定的 Blob。上传成功返回的公开 URL 会自动写入表单状态；提交表单后，姓名、说明文字、`audioUrl` 和媒体类型会写入 Firebase Firestore。
 
 ## 本地运行
 
@@ -27,6 +27,8 @@
 播放界面：http://localhost:3000/
 
 上传界面：http://localhost:3000/upload
+
+摄像头和麦克风录制需要浏览器权限；除 `localhost` 外，部署地址必须使用 HTTPS。
 
 ## 部署说明
 

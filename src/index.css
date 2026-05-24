@@ -584,6 +584,61 @@ textarea:focus {
   font-style: normal;
 }
 
+.camera-recorder {
+  display: grid;
+  gap: 12px;
+}
+
+.camera-preview {
+  position: relative;
+  display: grid;
+  min-height: 240px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(126, 249, 255, 0.34);
+  background:
+    linear-gradient(135deg, rgba(49, 255, 213, 0.08), rgba(117, 87, 255, 0.12)),
+    rgba(3, 8, 18, 0.82);
+}
+
+.camera-preview video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: #02050d;
+}
+
+.camera-preview video:not([src]) {
+  transform: scaleX(-1);
+}
+
+.camera-preview span {
+  position: absolute;
+  color: rgba(179, 242, 255, 0.52);
+  font-size: 0.78rem;
+}
+
+.recording-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.recording-meta span {
+  border: 1px solid rgba(118, 238, 255, 0.14);
+  padding: 8px 9px;
+  color: rgba(226, 247, 255, 0.7);
+  background: rgba(3, 8, 18, 0.46);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.recorder-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .primary-action,
 .ghost-action {
   display: inline-flex;

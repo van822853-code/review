@@ -1,5 +1,8 @@
 {
   "name": "回响",
-  "description": "课程总结视频与音频播放、上传和 Firestore 归档页面。",
-  "requestFramePermissions": []
+  "description": "课程总结视频播放、前置摄像头录制上传和 Firestore 归档页面。",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
 }
