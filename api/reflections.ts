@@ -12,6 +12,12 @@ type ReflectionInput = {
   mediaType?: unknown;
 };
 
+type SaveFailureReason =
+  | "firebase-not-configured"
+  | "validation"
+  | "firestore-write-failed"
+  | "server-error";
+
 function normalizeString(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -25,6 +31,14 @@ function serializeReflection(id: string, data: DocumentData) {
     mediaType: String(data.mediaType || ""),
     timestamp: String(data.timestamp || new Date(0).toISOString()),
   };
+}
+
+function sendSaveError(res: VercelResponse, reason: SaveFailureReason, message: string, status = 200) {
+  res.status(status).json({
+    ok: false,
+    reason,
+    error: message,
+  });
 }
 
 async function listReflections(res: VercelResponse) {
@@ -54,7 +68,11 @@ async function listReflections(res: VercelResponse) {
 async function createReflection(input: ReflectionInput, res: VercelResponse) {
   const db = getAdminDb();
   if (!db) {
-    res.status(503).json({ error: "Firebase Admin is not configured" });
+    sendSaveError(
+      res,
+      "firebase-not-configured",
+      "Firebase Admin is not configured. 请检查 FIREBASE_SERVICE_ACCOUNT_JSON、FIREBASE_PROJECT_ID 和 FIREBASE_DATABASE_ID。",
+    );
     return;
   }
 
@@ -64,15 +82,15 @@ async function createReflection(input: ReflectionInput, res: VercelResponse) {
   const mediaType = normalizeString(input?.mediaType) || "application/octet-stream";
 
   if (!name) {
-    res.status(400).json({ error: "请输入学生姓名" });
+    sendSaveError(res, "validation", "请输入学生姓名");
     return;
   }
   if (!audioUrl || !/^https:\/\/.+/i.test(audioUrl)) {
-    res.status(400).json({ error: "缺少有效的 audioUrl" });
+    sendSaveError(res, "validation", "缺少有效的 audioUrl");
     return;
   }
   if (!mediaType.startsWith("audio/") && !mediaType.startsWith("video/") && mediaType !== "application/octet-stream") {
-    res.status(400).json({ error: "文件类型无效" });
+    sendSaveError(res, "validation", "文件类型无效");
     return;
   }
 
@@ -89,8 +107,17 @@ async function createReflection(input: ReflectionInput, res: VercelResponse) {
     requestId: crypto.randomUUID(),
   };
 
-  await ref.set(reflection);
-  res.status(201).json({ reflection: serializeReflection(ref.id, reflection) });
+  try {
+    await ref.set(reflection);
+    res.status(201).json({ ok: true, reflection: serializeReflection(ref.id, reflection) });
+  } catch (error) {
+    console.error("Failed to create reflection", error);
+    sendSaveError(
+      res,
+      "firestore-write-failed",
+      error instanceof Error ? error.message : "Firestore 写入失败",
+    );
+  }
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -108,6 +135,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     methodNotAllowed(res, ["GET", "POST"]);
   } catch (error) {
     console.error("Reflection API failed", error);
-    res.status(500).json({ error: error instanceof Error ? error.message : "服务器错误" });
+    sendSaveError(res, "server-error", error instanceof Error ? error.message : "服务器错误");
   }
 }

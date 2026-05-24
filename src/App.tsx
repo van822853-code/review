@@ -83,6 +83,16 @@ function getUploadErrorMessage(error: unknown) {
   return message;
 }
 
+function getSaveErrorMessage(error: string, reason?: string) {
+  if (reason === 'firebase-not-configured') {
+    return 'Firestore 未配置成功。请检查 Vercel 环境变量 FIREBASE_SERVICE_ACCOUNT_JSON、FIREBASE_PROJECT_ID 和 FIREBASE_DATABASE_ID。';
+  }
+  if (reason === 'firestore-write-failed') {
+    return `Firestore 写入失败：${error}`;
+  }
+  return error || '保存失败';
+}
+
 function App() {
   const isUploadPage = window.location.pathname.replace(/\/+$/, '') === '/upload';
 
@@ -381,8 +391,10 @@ function UploadPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
       });
-      const payload = (await response.json()) as { reflection?: Reflection; error?: string };
-      if (!response.ok || !payload.reflection) throw new Error(payload.error || '保存失败');
+      const payload = await readJsonResponse<{ ok?: boolean; reflection?: Reflection; error?: string; reason?: string }>(response);
+      if (!response.ok || payload.ok === false || !payload.reflection) {
+        throw new Error(getSaveErrorMessage(payload.error || '保存失败', payload.reason));
+      }
 
       setForm(initialForm);
       resetRecording();

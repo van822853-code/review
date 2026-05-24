@@ -196,6 +196,14 @@ function serializeReflection(id: string, data: DocumentData) {
   };
 }
 
+function sendSaveError(res: express.Response, reason: string, message: string, status = 200) {
+  res.status(status).json({
+    ok: false,
+    reason,
+    error: message,
+  });
+}
+
 async function startServer() {
   const app = express();
   const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -332,7 +340,11 @@ async function startServer() {
   app.post("/api/reflections", async (req, res) => {
     const db = getAdminDb();
     if (!db) {
-      res.status(503).json({ error: "Firebase Admin is not configured" });
+      sendSaveError(
+        res,
+        "firebase-not-configured",
+        "Firebase Admin is not configured. 请检查 FIREBASE_SERVICE_ACCOUNT_JSON、FIREBASE_PROJECT_ID 和 FIREBASE_DATABASE_ID。",
+      );
       return;
     }
 
@@ -342,11 +354,11 @@ async function startServer() {
     const mediaType = typeof req.body?.mediaType === "string" ? req.body.mediaType.trim() : "application/octet-stream";
 
     if (!name) {
-      res.status(400).json({ error: "请输入学生姓名" });
+      sendSaveError(res, "validation", "请输入学生姓名");
       return;
     }
     if (!audioUrl || !/^https:\/\/.+/i.test(audioUrl)) {
-      res.status(400).json({ error: "缺少有效的 audioUrl" });
+      sendSaveError(res, "validation", "缺少有效的 audioUrl");
       return;
     }
 
@@ -364,9 +376,10 @@ async function startServer() {
         requestId: crypto.randomUUID(),
       };
       await ref.set(reflection);
-      res.status(201).json({ reflection: serializeReflection(ref.id, reflection) });
+      res.status(201).json({ ok: true, reflection: serializeReflection(ref.id, reflection) });
     } catch (error) {
-      res.status(500).json({ error: error instanceof Error ? error.message : "服务器错误" });
+      console.error("Failed to create reflection", error);
+      sendSaveError(res, "firestore-write-failed", error instanceof Error ? error.message : "Firestore 写入失败");
     }
   });
 
