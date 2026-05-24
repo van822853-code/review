@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { FieldValue, type DocumentData } from "firebase-admin/firestore";
-import { getAdminDb, methodNotAllowed } from "./_shared";
+import { getAdminDb, methodNotAllowed } from "./_shared.js";
 
 const REFLECTIONS_COLLECTION = process.env.FIREBASE_REFLECTIONS_COLLECTION || "courseReflections";
 
