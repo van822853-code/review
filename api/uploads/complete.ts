@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { callUploadApi, jsonError, normalizeString } from "./_shared";
+import { callUploadApi, jsonError, normalizeString } from "./_shared.js";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -25,4 +25,3 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     jsonError(res, status, message);
   }
 }
-

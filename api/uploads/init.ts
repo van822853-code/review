@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { callUploadApi, jsonError, MAX_UPLOAD_BYTES, normalizeString } from "./_shared";
+import { callUploadApi, jsonError, MAX_UPLOAD_BYTES, normalizeString } from "./_shared.js";
 
 type InitResponse = {
   uploadId: string;
@@ -51,4 +51,3 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     jsonError(res, status, message);
   }
 }
-
