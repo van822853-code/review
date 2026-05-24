@@ -10,6 +10,9 @@ type ReflectionInput = {
   note?: unknown;
   audioUrl?: unknown;
   mediaType?: unknown;
+  uploadId?: unknown;
+  objectKey?: unknown;
+  sizeBytes?: unknown;
 };
 
 type SaveFailureReason =
@@ -29,6 +32,9 @@ function serializeReflection(id: string, data: DocumentData) {
     note: String(data.note || ""),
     audioUrl: String(data.audioUrl || ""),
     mediaType: String(data.mediaType || ""),
+    uploadId: String(data.uploadId || ""),
+    objectKey: String(data.objectKey || ""),
+    sizeBytes: Number(data.sizeBytes || 0),
     timestamp: String(data.timestamp || new Date(0).toISOString()),
   };
 }
@@ -80,6 +86,9 @@ async function createReflection(input: ReflectionInput, res: VercelResponse) {
   const note = normalizeString(input?.note);
   const audioUrl = normalizeString(input?.audioUrl);
   const mediaType = normalizeString(input?.mediaType) || "application/octet-stream";
+  const uploadId = normalizeString(input?.uploadId);
+  const objectKey = normalizeString(input?.objectKey);
+  const sizeBytes = Number(input?.sizeBytes || 0);
 
   if (!name) {
     sendSaveError(res, "validation", "请输入学生姓名");
@@ -102,6 +111,9 @@ async function createReflection(input: ReflectionInput, res: VercelResponse) {
     note,
     audioUrl,
     mediaType,
+    uploadId,
+    objectKey,
+    sizeBytes: Number.isFinite(sizeBytes) && sizeBytes > 0 ? sizeBytes : 0,
     timestamp,
     createdAt: FieldValue.serverTimestamp(),
     requestId: crypto.randomUUID(),

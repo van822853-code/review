@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
-import { put } from '@vercel/blob/client';
 import { Camera, CheckCircle2, Circle, Loader2, Play, Radio, RefreshCw, RotateCcw, Square, UploadCloud, UserRound, Waves } from 'lucide-react';
 
 type Reflection = {
@@ -9,6 +8,17 @@ type Reflection = {
   mediaType: string;
   note: string;
   timestamp: string;
+  uploadId?: string;
+  objectKey?: string;
+  sizeBytes?: number;
+};
+
+type UploadInitResponse = {
+  uploadId: string;
+  objectKey: string;
+  uploadUrl: string;
+  publicUrl: string;
+  expiresAt?: string;
 };
 
 type UploadState = 'idle' | 'uploading' | 'uploaded' | 'error';
@@ -20,6 +30,9 @@ const initialForm = {
   note: '',
   audioUrl: '',
   mediaType: '',
+  uploadId: '',
+  objectKey: '',
+  sizeBytes: 0,
 };
 
 function sanitizeUploadName(value: string) {
@@ -57,28 +70,76 @@ async function readJsonResponse<T>(response: Response): Promise<T> {
   }
 }
 
-async function requestUploadToken(input: { pathname: string; contentType: string; size: number }) {
-  const response = await fetch('/api/upload', {
+async function requestUploadInit(input: {
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  externalUserId: string;
+  metadata?: Record<string, string | number | boolean>;
+}) {
+  const response = await fetch('/api/uploads/init', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   });
-  const payload = await readJsonResponse<{ clientToken?: string; error?: string }>(response);
+  const payload = await readJsonResponse<UploadInitResponse & { error?: string }>(response);
 
-  if (!response.ok || !payload.clientToken) {
-    throw new Error(payload.error || '无法获取 Vercel Blob 上传令牌');
+  if (!response.ok || !payload.uploadUrl || !payload.publicUrl || !payload.uploadId) {
+    throw new Error(payload.error || '无法初始化视频上传');
   }
 
-  return payload.clientToken;
+  return payload;
+}
+
+async function completeUpload(uploadId: string) {
+  const response = await fetch('/api/uploads/complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uploadId }),
+  });
+  const payload = await readJsonResponse<{ ok?: boolean; error?: string; publicUrl?: string }>(response);
+
+  if (!response.ok) {
+    throw new Error(payload.error || '无法确认视频上传');
+  }
+
+  return payload;
+}
+
+function putBlobToUploadUrl(input: {
+  uploadUrl: string;
+  blob: Blob;
+  contentType: string;
+  onProgress: (percentage: number) => void;
+}) {
+  return new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', input.uploadUrl);
+    xhr.setRequestHeader('Content-Type', input.contentType);
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        input.onProgress(Math.round((event.loaded / event.total) * 100));
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve();
+        return;
+      }
+      reject(new Error(`R2 上传失败：HTTP ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new Error('R2 上传失败，请检查网络或跨域配置'));
+    xhr.send(input.blob);
+  });
 }
 
 function getUploadErrorMessage(error: unknown) {
   const message = error instanceof Error ? error.message : String(error || '上传失败');
-  if (message.includes('BLOB_READ_WRITE_TOKEN')) {
-    return 'Vercel Blob token 未配置。请在 Vercel 环境变量里设置 BLOB_READ_WRITE_TOKEN。';
+  if (message.includes('VAD_UPLOAD_API_KEY') || message.includes('VAD_UPLOAD_API_BASE')) {
+    return '视频上传 API 未配置。请在 Vercel 环境变量里设置 VAD_UPLOAD_API_BASE 和 VAD_UPLOAD_API_KEY。';
   }
   if (message.includes('not valid JSON') || message.includes('server error')) {
-    return '上传接口返回了非 JSON 错误。请检查 Vercel 部署日志和 BLOB_READ_WRITE_TOKEN 配置。';
+    return '上传接口返回了非 JSON 错误。请检查 Vercel 部署日志和视频上传 API 配置。';
   }
   return message;
 }
@@ -302,7 +363,7 @@ function UploadPage() {
       setRecordedBlob(blob);
       setRecordedUrl(url);
       setRecordedSize(blob.size);
-      setForm((current) => ({ ...current, audioUrl: '', mediaType: '' }));
+      setForm((current) => ({ ...current, audioUrl: '', mediaType: '', uploadId: '', objectKey: '', sizeBytes: 0 }));
       setUploadState('idle');
       setRecordingState('recorded');
       setMessage(`录制完成，已压缩到最高 720p，文件体积 ${formatFileSize(blob.size)}。`);
@@ -329,7 +390,7 @@ function UploadPage() {
     setRecordedBlob(null);
     setRecordedUrl('');
     setRecordedSize(0);
-    setForm((current) => ({ ...current, audioUrl: '', mediaType: '' }));
+    setForm((current) => ({ ...current, audioUrl: '', mediaType: '', uploadId: '', objectKey: '', sizeBytes: 0 }));
     setUploadState('idle');
     setSubmitState('idle');
     setRecordingState(sourceStreamRef.current ? 'camera-ready' : 'idle');
@@ -343,39 +404,48 @@ function UploadPage() {
     }
 
     const fileName = `reflection-${Date.now()}.webm`;
-    const pathname = `reflections/${sanitizeUploadName(fileName)}`;
+    const filename = sanitizeUploadName(fileName);
+    const contentType = 'video/webm';
     setUploadState('uploading');
     setSubmitState('idle');
-    setMessage('正在申请 Vercel Blob 上传令牌...');
+    setMessage('正在初始化视频上传...');
 
     try {
-      const clientToken = await requestUploadToken({
-        pathname,
-        contentType: recordedBlob.type || 'video/webm',
-        size: recordedBlob.size,
-      });
-      setMessage('正在上传到 Vercel Blob... 0%');
-
-      const blob = await put(pathname, recordedBlob, {
-        access: 'public',
-        token: clientToken,
-        contentType: recordedBlob.type || 'video/webm',
-        multipart: true,
-        onUploadProgress: ({ percentage }) => {
-          setMessage(`正在上传到 Vercel Blob... ${Math.round(percentage)}%`);
+      const upload = await requestUploadInit({
+        filename,
+        contentType,
+        sizeBytes: recordedBlob.size,
+        externalUserId: form.name.trim() || 'anonymous',
+        metadata: {
+          source: 'echo-reflection',
+          originalMimeType: recordedBlob.type || 'video/webm',
         },
       });
+      setMessage('正在上传到视频存储... 0%');
+
+      await putBlobToUploadUrl({
+        uploadUrl: upload.uploadUrl,
+        blob: recordedBlob,
+        contentType,
+        onProgress: (percentage) => {
+          setMessage(`正在上传到视频存储... ${percentage}%`);
+        },
+      });
+      await completeUpload(upload.uploadId);
 
       setForm((current) => ({
         ...current,
-        audioUrl: blob.url,
-        mediaType: recordedBlob.type || 'video/webm',
+        audioUrl: upload.publicUrl,
+        mediaType: contentType,
+        uploadId: upload.uploadId,
+        objectKey: upload.objectKey,
+        sizeBytes: recordedBlob.size,
       }));
       setUploadState('uploaded');
       setMessage('上传成功，文件 URL 已写入表单状态。');
     } catch (error) {
       setUploadState('error');
-      setForm((current) => ({ ...current, audioUrl: '', mediaType: '' }));
+      setForm((current) => ({ ...current, audioUrl: '', mediaType: '', uploadId: '', objectKey: '', sizeBytes: 0 }));
       setMessage(getUploadErrorMessage(error));
     }
   }
@@ -410,8 +480,8 @@ function UploadPage() {
   const statusText = useMemo(() => {
     if (recordingState === 'recording') return 'RECORDING 720P';
     if (recordingState === 'recorded') return 'RECORDING READY';
-    if (uploadState === 'uploading') return 'UPLOADING TO BLOB';
-    if (uploadState === 'uploaded') return 'BLOB URL READY';
+    if (uploadState === 'uploading') return 'UPLOADING TO R2';
+    if (uploadState === 'uploaded') return 'VIDEO URL READY';
     if (submitState === 'submitting') return 'WRITING FIRESTORE';
     if (submitState === 'submitted') return 'SAVED';
     return 'WAITING FOR CAMERA';
@@ -422,7 +492,7 @@ function UploadPage() {
       <div className="upload-intro">
         <div className="signal-pills" aria-hidden="true">
           <span>Submit</span>
-          <span>Vercel Blob</span>
+          <span>R2 Upload API</span>
           <span>Firestore</span>
         </div>
         <p className="eyebrow">UPLOAD CHANNEL</p>

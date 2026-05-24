@@ -2,7 +2,6 @@ import express from "express";
 import crypto from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
-import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
 import { createServer as createViteServer } from "vite";
 import { initializeApp, applicationDefault, cert, getApps } from "firebase-admin/app";
 import { getFirestore, FieldValue, type DocumentData, type Firestore } from "firebase-admin/firestore";
@@ -15,6 +14,7 @@ const SESSION_COOKIE = "show_plan_admin";
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 12;
 const REFLECTIONS_COLLECTION = process.env.FIREBASE_REFLECTIONS_COLLECTION || "courseReflections";
 const MAX_REFLECTION_UPLOAD_BYTES = process.env.MAX_REFLECTION_UPLOAD_BYTES || `${250 * 1024 * 1024}`;
+const UPLOAD_API_BASE = (process.env.VAD_UPLOAD_API_BASE || "https://vad-video-upload-api.saintmob.workers.dev").replace(/\/+$/, "");
 
 function normalizeAdminPassword(value: unknown) {
   if (typeof value !== "string") return "";
@@ -192,6 +192,9 @@ function serializeReflection(id: string, data: DocumentData) {
     note: String(data.note || ""),
     audioUrl: String(data.audioUrl || ""),
     mediaType: String(data.mediaType || ""),
+    uploadId: String(data.uploadId || ""),
+    objectKey: String(data.objectKey || ""),
+    sizeBytes: Number(data.sizeBytes || 0),
     timestamp: String(data.timestamp || new Date(0).toISOString()),
   };
 }
@@ -202,6 +205,40 @@ function sendSaveError(res: express.Response, reason: string, message: string, s
     reason,
     error: message,
   });
+}
+
+function getUploadApiKey() {
+  return typeof process.env.VAD_UPLOAD_API_KEY === "string" ? process.env.VAD_UPLOAD_API_KEY.trim() : "";
+}
+
+async function callUploadApi(pathname: string, body: unknown) {
+  const apiKey = getUploadApiKey();
+  if (!apiKey) {
+    throw new Error("VAD_UPLOAD_API_KEY is not configured");
+  }
+
+  const response = await fetch(`${UPLOAD_API_BASE}${pathname}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  let payload: Record<string, unknown>;
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    payload = { error: text.slice(0, 240) };
+  }
+
+  if (!response.ok) {
+    const message = typeof payload?.error === "string" ? payload.error : `Upload API failed with HTTP ${response.status}`;
+    throw new Error(message);
+  }
+
+  return payload;
 }
 
 async function startServer() {
@@ -282,38 +319,58 @@ async function startServer() {
     }
   });
 
-  app.post("/api/upload", async (req, res) => {
+  app.post("/api/uploads/init", async (req, res) => {
     res.setHeader("Content-Type", "application/json; charset=utf-8");
 
     try {
-      const pathname = typeof req.body?.pathname === "string" ? req.body.pathname.trim() : "";
       const contentType = typeof req.body?.contentType === "string" ? req.body.contentType.trim() : "video/webm";
-      const size = Number(req.body?.size || 0);
+      const filename = typeof req.body?.filename === "string" ? req.body.filename.trim() : `reflection-${Date.now()}.webm`;
+      const externalUserId = typeof req.body?.externalUserId === "string" ? req.body.externalUserId.trim() : "anonymous";
+      const sizeBytes = Number(req.body?.sizeBytes || 0);
 
-      if (!pathname.startsWith("reflections/")) {
-        res.status(400).json({ error: "Invalid upload pathname" });
+      if (contentType !== "video/webm") {
+        res.status(400).json({ error: "Only video/webm recordings can be uploaded" });
         return;
       }
-      if (!contentType.startsWith("video/")) {
-        res.status(400).json({ error: "Only recorded videos can be uploaded" });
-        return;
-      }
-      if (!Number.isFinite(size) || size <= 0 || size > Number(MAX_REFLECTION_UPLOAD_BYTES)) {
+      if (!Number.isFinite(sizeBytes) || sizeBytes <= 0 || sizeBytes > Number(MAX_REFLECTION_UPLOAD_BYTES)) {
         res.status(400).json({ error: "录制视频体积无效或超过上限" });
         return;
       }
 
-      const clientToken = await generateClientTokenFromReadWriteToken({
-        pathname,
-        allowedContentTypes: ["video/*"],
-        maximumSizeInBytes: Number(MAX_REFLECTION_UPLOAD_BYTES),
-        addRandomSuffix: true,
+      const payload = await callUploadApi("/api/uploads/init", {
+        filename,
+        contentType,
+        sizeBytes,
+        externalUserId: externalUserId || "anonymous",
+        durationMs: Number.isFinite(Number(req.body?.durationMs)) ? Number(req.body.durationMs) : undefined,
+        width: Number.isFinite(Number(req.body?.width)) ? Number(req.body.width) : undefined,
+        height: Number.isFinite(Number(req.body?.height)) ? Number(req.body.height) : undefined,
+        metadata: req.body?.metadata && typeof req.body.metadata === "object" ? req.body.metadata : undefined,
       });
 
-      res.json({ clientToken });
+      res.json(payload);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "上传令牌生成失败";
-      const statusCode = message.includes("BLOB_READ_WRITE_TOKEN") || message.includes("Invalid `BLOB") ? 503 : 400;
+      const message = error instanceof Error ? error.message : "无法初始化视频上传";
+      const statusCode = message.includes("VAD_UPLOAD_API_KEY") ? 503 : 502;
+      res.status(statusCode).json({ error: message });
+    }
+  });
+
+  app.post("/api/uploads/complete", async (req, res) => {
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+
+    try {
+      const uploadId = typeof req.body?.uploadId === "string" ? req.body.uploadId.trim() : "";
+      if (!uploadId) {
+        res.status(400).json({ error: "Missing uploadId" });
+        return;
+      }
+
+      const payload = await callUploadApi("/api/uploads/complete", { uploadId });
+      res.json(payload);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "无法确认视频上传";
+      const statusCode = message.includes("VAD_UPLOAD_API_KEY") ? 503 : 502;
       res.status(statusCode).json({ error: message });
     }
   });
@@ -352,6 +409,9 @@ async function startServer() {
     const note = typeof req.body?.note === "string" ? req.body.note.trim() : "";
     const audioUrl = typeof req.body?.audioUrl === "string" ? req.body.audioUrl.trim() : "";
     const mediaType = typeof req.body?.mediaType === "string" ? req.body.mediaType.trim() : "application/octet-stream";
+    const uploadId = typeof req.body?.uploadId === "string" ? req.body.uploadId.trim() : "";
+    const objectKey = typeof req.body?.objectKey === "string" ? req.body.objectKey.trim() : "";
+    const sizeBytes = Number(req.body?.sizeBytes || 0);
 
     if (!name) {
       sendSaveError(res, "validation", "请输入学生姓名");
@@ -371,6 +431,9 @@ async function startServer() {
         note,
         audioUrl,
         mediaType,
+        uploadId,
+        objectKey,
+        sizeBytes: Number.isFinite(sizeBytes) && sizeBytes > 0 ? sizeBytes : 0,
         timestamp,
         createdAt: FieldValue.serverTimestamp(),
         requestId: crypto.randomUUID(),
