@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
-import { upload } from '@vercel/blob/client';
+import { put } from '@vercel/blob/client';
 import { Camera, CheckCircle2, Circle, Loader2, Play, Radio, RefreshCw, RotateCcw, Square, UploadCloud, UserRound, Waves } from 'lucide-react';
 
 type Reflection = {
@@ -44,6 +44,43 @@ function getRecorderMimeType() {
     'video/webm',
   ];
   return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) || '';
+}
+
+async function readJsonResponse<T>(response: Response): Promise<T> {
+  const text = await response.text();
+  if (!text) return {} as T;
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(text.slice(0, 180));
+  }
+}
+
+async function requestUploadToken(input: { pathname: string; contentType: string; size: number }) {
+  const response = await fetch('/api/upload', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const payload = await readJsonResponse<{ clientToken?: string; error?: string }>(response);
+
+  if (!response.ok || !payload.clientToken) {
+    throw new Error(payload.error || '无法获取 Vercel Blob 上传令牌');
+  }
+
+  return payload.clientToken;
+}
+
+function getUploadErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || '上传失败');
+  if (message.includes('BLOB_READ_WRITE_TOKEN')) {
+    return 'Vercel Blob token 未配置。请在 Vercel 环境变量里设置 BLOB_READ_WRITE_TOKEN。';
+  }
+  if (message.includes('not valid JSON') || message.includes('server error')) {
+    return '上传接口返回了非 JSON 错误。请检查 Vercel 部署日志和 BLOB_READ_WRITE_TOKEN 配置。';
+  }
+  return message;
 }
 
 function App() {
@@ -296,22 +333,24 @@ function UploadPage() {
     }
 
     const fileName = `reflection-${Date.now()}.webm`;
+    const pathname = `reflections/${sanitizeUploadName(fileName)}`;
     setUploadState('uploading');
     setSubmitState('idle');
-    setMessage('正在上传到 Vercel Blob...');
+    setMessage('正在申请 Vercel Blob 上传令牌...');
 
     try {
-      const blob = await upload(`reflections/${sanitizeUploadName(fileName)}`, recordedBlob, {
+      const clientToken = await requestUploadToken({
+        pathname,
+        contentType: recordedBlob.type || 'video/webm',
+        size: recordedBlob.size,
+      });
+      setMessage('正在上传到 Vercel Blob... 0%');
+
+      const blob = await put(pathname, recordedBlob, {
         access: 'public',
-        handleUploadUrl: '/api/upload',
+        token: clientToken,
         contentType: recordedBlob.type || 'video/webm',
         multipart: true,
-        clientPayload: JSON.stringify({
-          fileName,
-          mediaType: recordedBlob.type || 'video/webm',
-          source: 'front-camera',
-          size: recordedBlob.size,
-        }),
         onUploadProgress: ({ percentage }) => {
           setMessage(`正在上传到 Vercel Blob... ${Math.round(percentage)}%`);
         },
@@ -327,7 +366,7 @@ function UploadPage() {
     } catch (error) {
       setUploadState('error');
       setForm((current) => ({ ...current, audioUrl: '', mediaType: '' }));
-      setMessage(error instanceof Error ? error.message : '上传失败');
+      setMessage(getUploadErrorMessage(error));
     }
   }
 

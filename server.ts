@@ -2,7 +2,7 @@ import express from "express";
 import crypto from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
-import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
+import { generateClientTokenFromReadWriteToken } from "@vercel/blob/client";
 import { createServer as createViteServer } from "vite";
 import { initializeApp, applicationDefault, cert, getApps } from "firebase-admin/app";
 import { getFirestore, FieldValue, type DocumentData, type Firestore } from "firebase-admin/firestore";
@@ -275,21 +275,37 @@ async function startServer() {
   });
 
   app.post("/api/upload", async (req, res) => {
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+
     try {
-      const jsonResponse = await handleUpload({
-        request: req,
-        body: req.body as HandleUploadBody,
-        onBeforeGenerateToken: async () => ({
-          allowedContentTypes: ["audio/*", "video/*"],
-          maximumSizeInBytes: Number(MAX_REFLECTION_UPLOAD_BYTES),
-          addRandomSuffix: true,
-        }),
+      const pathname = typeof req.body?.pathname === "string" ? req.body.pathname.trim() : "";
+      const contentType = typeof req.body?.contentType === "string" ? req.body.contentType.trim() : "video/webm";
+      const size = Number(req.body?.size || 0);
+
+      if (!pathname.startsWith("reflections/")) {
+        res.status(400).json({ error: "Invalid upload pathname" });
+        return;
+      }
+      if (!contentType.startsWith("video/")) {
+        res.status(400).json({ error: "Only recorded videos can be uploaded" });
+        return;
+      }
+      if (!Number.isFinite(size) || size <= 0 || size > Number(MAX_REFLECTION_UPLOAD_BYTES)) {
+        res.status(400).json({ error: "录制视频体积无效或超过上限" });
+        return;
+      }
+
+      const clientToken = await generateClientTokenFromReadWriteToken({
+        pathname,
+        allowedContentTypes: ["video/*"],
+        maximumSizeInBytes: Number(MAX_REFLECTION_UPLOAD_BYTES),
+        addRandomSuffix: true,
       });
 
-      res.json(jsonResponse);
+      res.json({ clientToken });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "上传失败";
-      const statusCode = message.includes("BLOB_READ_WRITE_TOKEN") ? 503 : 400;
+      const message = error instanceof Error ? error.message : "上传令牌生成失败";
+      const statusCode = message.includes("BLOB_READ_WRITE_TOKEN") || message.includes("Invalid `BLOB") ? 503 : 400;
       res.status(statusCode).json({ error: message });
     }
   });
