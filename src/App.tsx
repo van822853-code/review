@@ -124,7 +124,7 @@ async function readCoverImageDataUrl(file: File) {
 
   try {
     const image = await loadImage(objectUrl);
-    const maxSide = 1400;
+    const maxSide = 1024;
     const scale = Math.min(maxSide / image.width, maxSide / image.height, 1);
     const width = Math.max(1, Math.round(image.width * scale));
     const height = Math.max(1, Math.round(image.height * scale));
@@ -136,12 +136,10 @@ async function readCoverImageDataUrl(file: File) {
       throw new Error('无法处理封面图片');
     }
 
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, width, height);
     context.drawImage(image, 0, 0, width, height);
-    if (file.type === 'image/png') {
-      return canvas.toDataURL('image/png');
-    }
-
-    return canvas.toDataURL('image/jpeg', 0.86);
+    return canvas.toDataURL('image/jpeg', 0.82);
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
@@ -478,8 +476,16 @@ function UploadPage() {
     if (liveVideoRef.current) liveVideoRef.current.srcObject = null;
   }
 
+  function commitWorkSlots(updater: (current: WorkSlotState[]) => WorkSlotState[]) {
+    setWorkSlots((current) => {
+      const next = updater(current);
+      workSlotsRef.current = next;
+      return next;
+    });
+  }
+
   function updateWorkSlot(index: number, updater: (current: WorkSlotState) => WorkSlotState) {
-    setWorkSlots((current) =>
+    commitWorkSlots((current) =>
       current.map((slot, slotIndex) => {
         if (slotIndex !== index) return slot;
         const next = updater(slot);
@@ -503,7 +509,7 @@ function UploadPage() {
   }
 
   function clearWorkSlots() {
-    setWorkSlots((current) => {
+    commitWorkSlots((current) => {
       current.forEach((slot) => {
         if (slot.previewUrl) URL.revokeObjectURL(slot.previewUrl);
       });
@@ -740,8 +746,7 @@ function UploadPage() {
       if (!form.roles.length) throw new Error('请至少选择一个工作人员职能。');
       if (!form.textSummary.trim()) throw new Error('请输入文本总结。');
       if (!isHttpsUrl(form.videoSummaryUrl.trim())) throw new Error('请提供有效的 HTTPS 视频总结链接。');
-
-      const works = await buildWorksPayload(workSlots);
+      const works = await buildWorksPayload(workSlotsRef.current);
 
       setMessage('正在提交到活动后端...');
       const payload = await api<{ ok?: boolean; student?: { id: string } }>('/api/students', {
@@ -926,7 +931,7 @@ function UploadPage() {
                 type="url"
                 value={slot.workUrl}
                 onChange={(event) =>
-                  setWorkSlots((current) =>
+                  commitWorkSlots((current) =>
                     current.map((currentSlot, slotIndex) =>
                       slotIndex === index ? { ...currentSlot, workUrl: event.target.value } : currentSlot,
                     ),
@@ -977,6 +982,7 @@ function UploadPage() {
             </div>
           ))}
         </div>
+        <p className="form-message">至少填写一组作品网页链接，并为该作品上传本地封面。封面会自动压缩后写入提交内容。</p>
 
         <p className="form-message">默认直连活动后端：{eventApiBase}</p>
         {message && <p className={`form-message ${uploadState === 'error' || submitState === 'error' ? 'is-error' : ''}`}>{message}</p>}
