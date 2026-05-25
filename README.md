@@ -35,7 +35,7 @@ https://show-plan-event-backend.liucheng-show-plan.workers.dev
 
 - 公开页直接跨域访问活动后端，不再依赖旧 Firestore reflection 模型。
 - 上传页提交时调用 `POST /api/students`。
-- 作品图片会先通过本地文件选择上传到活动后端，再把生成的公开链接写入 `works`。
+- 作品封面改为本地文件选择，提交时会直接写入 `works.coverUrl`，不再要求填写图片链接。
 - 录制视频仍使用：
   1. `POST /api/uploads/init`
   2. 浏览器 `PUT uploadUrl`

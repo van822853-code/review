@@ -17,11 +17,10 @@ type Work = {
 };
 
 type WorkSlotState = {
+  workUrl: string;
   file: File | null;
   fileName: string;
   previewUrl: string;
-  uploadedUrl: string;
-  uploadState: UploadState;
 };
 
 type Summary = {
@@ -63,11 +62,10 @@ const initialForm = {
 
 function createEmptyWorkSlot(): WorkSlotState {
   return {
+    workUrl: '',
     file: null,
     fileName: '',
     previewUrl: '',
-    uploadedUrl: '',
-    uploadState: 'idle',
   };
 }
 
@@ -112,19 +110,41 @@ function isHttpsUrl(value: string) {
   }
 }
 
-function inferImageContentType(file: File) {
-  if (file.type.startsWith('image/')) {
-    return file.type;
-  }
+function loadImage(src: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('无法读取封面文件'));
+    image.src = src;
+  });
+}
 
-  const lowerName = file.name.toLowerCase();
-  if (lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')) return 'image/jpeg';
-  if (lowerName.endsWith('.png')) return 'image/png';
-  if (lowerName.endsWith('.webp')) return 'image/webp';
-  if (lowerName.endsWith('.gif')) return 'image/gif';
-  if (lowerName.endsWith('.avif')) return 'image/avif';
-  if (lowerName.endsWith('.bmp')) return 'image/bmp';
-  return 'image/png';
+async function readCoverImageDataUrl(file: File) {
+  const objectUrl = URL.createObjectURL(file);
+
+  try {
+    const image = await loadImage(objectUrl);
+    const maxSide = 1400;
+    const scale = Math.min(maxSide / image.width, maxSide / image.height, 1);
+    const width = Math.max(1, Math.round(image.width * scale));
+    const height = Math.max(1, Math.round(image.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      throw new Error('无法处理封面图片');
+    }
+
+    context.drawImage(image, 0, 0, width, height);
+    if (file.type === 'image/png') {
+      return canvas.toDataURL('image/png');
+    }
+
+    return canvas.toDataURL('image/jpeg', 0.86);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }
 
 function getRecorderMimeType() {
@@ -251,21 +271,38 @@ function getUploadErrorMessage(error: unknown) {
   return message;
 }
 
-function buildWorksPayload(workUrls: string[]) {
-  const normalized = workUrls.map((value) => value.trim()).filter(Boolean);
-  if (!normalized.length) {
-    throw new Error('请至少上传 1 张作品图片。');
+async function buildWorksPayload(workSlots: WorkSlotState[]) {
+  const normalized: Array<{ workUrl: string; coverUrl: string }> = [];
+
+  for (const [index, slot] of workSlots.entries()) {
+    const workUrl = slot.workUrl.trim();
+    const hasCover = Boolean(slot.file);
+
+    if (!workUrl && !hasCover) {
+      continue;
+    }
+
+    if (!workUrl) {
+      throw new Error(`作品 ${index + 1} 需要填写网页链接。`);
+    }
+    if (!isHttpsUrl(workUrl)) {
+      throw new Error(`作品 ${index + 1} 的网页链接必须是 HTTPS URL。`);
+    }
+    if (!slot.file) {
+      throw new Error(`作品 ${index + 1} 需要从电脑本地上传封面图片。`);
+    }
+
+    normalized.push({
+      workUrl,
+      coverUrl: await readCoverImageDataUrl(slot.file),
+    });
   }
 
-  return normalized.slice(0, 2).map((workUrl) => {
-    if (!isHttpsUrl(workUrl)) {
-      throw new Error('作品图片上传后必须生成 HTTPS 链接。');
-    }
-    return {
-      workUrl,
-      coverUrl: workUrl,
-    };
-  });
+  if (!normalized.length) {
+    throw new Error('请至少填写 1 组作品网页链接并上传对应封面。');
+  }
+
+  return normalized.slice(0, 2);
 }
 
 function App() {
@@ -456,16 +493,11 @@ function UploadPage() {
 
   function setWorkFile(index: number, file: File | null) {
     updateWorkSlot(index, (current) => {
-      if (current.previewUrl) {
-        URL.revokeObjectURL(current.previewUrl);
-      }
-
       return {
+        workUrl: current.workUrl,
         file,
         fileName: file?.name || '',
         previewUrl: file ? URL.createObjectURL(file) : '',
-        uploadedUrl: '',
-        uploadState: 'idle',
       };
     });
   }
@@ -709,70 +741,7 @@ function UploadPage() {
       if (!form.textSummary.trim()) throw new Error('请输入文本总结。');
       if (!isHttpsUrl(form.videoSummaryUrl.trim())) throw new Error('请提供有效的 HTTPS 视频总结链接。');
 
-      const workUrls: string[] = [];
-      for (const [index, slot] of workSlots.entries()) {
-        if (slot.uploadState === 'uploaded' && slot.uploadedUrl) {
-          workUrls.push(slot.uploadedUrl);
-          continue;
-        }
-
-        if (!slot.file) {
-          continue;
-        }
-
-        const contentType = inferImageContentType(slot.file);
-        if (!contentType.startsWith('image/')) {
-          throw new Error(`作品图片 ${index + 1} 只能上传图片文件。`);
-        }
-
-        setMessage(`正在上传作品图片 ${index + 1} ...`);
-        setWorkSlots((current) =>
-          current.map((currentSlot, slotIndex) =>
-            slotIndex === index ? { ...currentSlot, uploadState: 'uploading' } : currentSlot,
-          ),
-        );
-
-        try {
-          const upload = await uploadFileToStorage({
-            file: slot.file,
-            filename: sanitizeUploadName(slot.file.name || `work-${index + 1}.png`),
-            contentType,
-            externalUserId: form.fullName.trim() || `student:${Date.now()}`,
-            metadata: {
-              source: 'review-student-client',
-              assetKind: 'work-image',
-              workIndex: index + 1,
-              fullName: form.fullName.trim() || 'anonymous',
-              originalMimeType: slot.file.type || contentType,
-            },
-            onProgress: (percentage) => {
-              setMessage(`正在上传作品图片 ${index + 1} ... ${percentage}%`);
-            },
-          });
-
-          workUrls.push(upload.publicUrl);
-          setWorkSlots((current) =>
-            current.map((currentSlot, slotIndex) =>
-              slotIndex === index
-                ? {
-                    ...currentSlot,
-                    uploadedUrl: upload.publicUrl,
-                    uploadState: 'uploaded',
-                  }
-                : currentSlot,
-            ),
-          );
-        } catch (error) {
-          setWorkSlots((current) =>
-            current.map((currentSlot, slotIndex) =>
-              slotIndex === index ? { ...currentSlot, uploadState: 'error' } : currentSlot,
-            ),
-          );
-          throw error;
-        }
-      }
-
-      const works = buildWorksPayload(workUrls);
+      const works = await buildWorksPayload(workSlots);
 
       setMessage('正在提交到活动后端...');
       const payload = await api<{ ok?: boolean; student?: { id: string } }>('/api/students', {
@@ -948,8 +917,27 @@ function UploadPage() {
           {workSlots.map((slot, index) => (
             <div className="work-upload-card" key={index}>
               <div className="work-upload-head">
-                <label className="field-label" htmlFor={`work-image-${index}`}>作品图片 {index + 1}</label>
-                <span className={`upload-status ${slot.uploadState}`}>{slot.uploadState === 'idle' && slot.file ? '等待上传' : slot.uploadState === 'uploading' ? '上传中' : slot.uploadState === 'uploaded' ? '已上传' : slot.uploadState === 'error' ? '上传失败' : '未选择'}</span>
+                <label className="field-label" htmlFor={`work-url-${index}`}>作品网页链接 {index + 1}</label>
+                <span className="upload-status idle">可跳转</span>
+              </div>
+              <input
+                id={`work-url-${index}`}
+                className="url-field"
+                type="url"
+                value={slot.workUrl}
+                onChange={(event) =>
+                  setWorkSlots((current) =>
+                    current.map((currentSlot, slotIndex) =>
+                      slotIndex === index ? { ...currentSlot, workUrl: event.target.value } : currentSlot,
+                    ),
+                  )
+                }
+                placeholder="https://..."
+              />
+
+              <div className="work-upload-head">
+                <label className="field-label" htmlFor={`work-image-${index}`}>作品封面 {index + 1}</label>
+                <span className="upload-status idle">本地上传</span>
               </div>
               <label className={slot.previewUrl ? 'upload-drop work-upload-drop has-preview' : 'upload-drop work-upload-drop'} htmlFor={`work-image-${index}`}>
                 <input
@@ -960,33 +948,29 @@ function UploadPage() {
                 />
                 {slot.previewUrl ? (
                   <>
-                    <img className="work-upload-preview" src={slot.previewUrl} alt={`作品图片 ${index + 1} 预览`} />
+                    <img className="work-upload-preview" src={slot.previewUrl} alt={`作品封面 ${index + 1} 预览`} />
                     <strong>{slot.fileName}</strong>
-                    <em>{slot.uploadState === 'uploaded' ? '已上传到活动后端，提交时会自动写入作品链接。' : '本地图片已选中，提交时会自动上传。'}</em>
+                    <em>封面会随提交一起写入，不需要再手填图片链接。</em>
                   </>
                 ) : (
                   <>
                     <span className="upload-icon" aria-hidden="true">
                       <UploadCloud />
                     </span>
-                    <strong>点击选择本地图片</strong>
-                    <em>支持 JPG / PNG / WebP / GIF，提交后会自动转为公开链接。</em>
+                    <strong>点击选择本地封面</strong>
+                    <em>支持 JPG / PNG / WebP / GIF，提交时会自动编码后写入作品封面。</em>
                   </>
                 )}
               </label>
               <div className="work-upload-actions">
                 <p className="form-message">
-                  {slot.uploadState === 'uploaded' && slot.uploadedUrl
-                    ? '已上传，可继续编辑其他字段后直接提交。'
-                    : slot.uploadState === 'uploading'
-                      ? '图片正在上传到活动后端。'
-                      : slot.fileName
-                        ? `已选择：${slot.fileName}`
-                        : '尚未选择图片。'}
+                  {slot.fileName
+                    ? `已选择：${slot.fileName}`
+                    : '尚未选择封面图片。'}
                 </p>
                 {slot.file ? (
                   <button className="ghost-action work-clear-button" type="button" onClick={() => setWorkFile(index, null)}>
-                    清除图片
+                    清除封面
                   </button>
                 ) : null}
               </div>
