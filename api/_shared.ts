@@ -22,6 +22,16 @@ export function normalizeAdminPassword(value: unknown) {
   return pair ? trimmed.slice(pair[0].length, -pair[1].length).trim() : trimmed;
 }
 
+function getStorageBucketName(projectId?: string, serviceAccount?: { storage_bucket?: string }) {
+  const configured =
+    process.env.FIREBASE_STORAGE_BUCKET ||
+    process.env.VITE_FIREBASE_STORAGE_BUCKET ||
+    serviceAccount?.storage_bucket ||
+    "";
+  if (configured.trim()) return configured.trim();
+  return projectId ? `${projectId}.appspot.com` : "";
+}
+
 function getSessionSecret() {
   return process.env.SESSION_SECRET || "local-dev-session-secret";
 }
@@ -151,6 +161,7 @@ export function getAdminDb(): Firestore | null {
         process.env.GCLOUD_PROJECT ||
         process.env.GCP_PROJECT ||
         serviceAccount?.project_id;
+      const storageBucket = getStorageBucketName(projectId, serviceAccount);
       
       console.log("   FIREBASE_PROJECT_ID:", process.env.FIREBASE_PROJECT_ID);
       console.log("   GOOGLE_CLOUD_PROJECT:", process.env.GOOGLE_CLOUD_PROJECT);
@@ -158,6 +169,7 @@ export function getAdminDb(): Firestore | null {
       console.log("   GCP_PROJECT:", process.env.GCP_PROJECT);
       console.log("   从 service account 获取的项目ID:", serviceAccount?.project_id);
       console.log("   最终使用的项目ID:", projectId);
+      console.log("   最终使用的 Storage bucket:", storageBucket || "(auto)");
       console.log("   serviceAccount 存在?", Boolean(serviceAccount));
       
       if (!serviceAccount && !projectId) {
@@ -168,6 +180,7 @@ export function getAdminDb(): Firestore | null {
       initializeApp({
         credential: serviceAccount ? cert(serviceAccount) : applicationDefault(),
         projectId,
+        storageBucket: storageBucket || undefined,
       });
       console.log("✅ [FIREBASE DEBUG] Firebase Admin 初始化成功");
     } else {

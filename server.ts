@@ -156,6 +156,16 @@ function extractJsonObject(value: string) {
   }
 }
 
+function getStorageBucketName(projectId?: string, serviceAccount?: { storage_bucket?: string }) {
+  const configured =
+    process.env.FIREBASE_STORAGE_BUCKET ||
+    process.env.VITE_FIREBASE_STORAGE_BUCKET ||
+    serviceAccount?.storage_bucket ||
+    "";
+  if (configured.trim()) return configured.trim();
+  return projectId ? `${projectId}.appspot.com` : "";
+}
+
 function getAdminDb(): Firestore | null {
   try {
     if (!getApps().length) {
@@ -166,12 +176,14 @@ function getAdminDb(): Firestore | null {
         process.env.GCLOUD_PROJECT ||
         process.env.GCP_PROJECT ||
         serviceAccount?.project_id;
+      const storageBucket = getStorageBucketName(projectId, serviceAccount);
       if (!serviceAccount && !projectId) {
         return null;
       }
       initializeApp({
         credential: serviceAccount ? cert(serviceAccount) : applicationDefault(),
         projectId,
+        storageBucket: storageBucket || undefined,
       });
     }
 
