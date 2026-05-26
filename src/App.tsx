@@ -385,12 +385,8 @@ function LandingPage() {
         </div>
         <p className="eyebrow">ENTRY CHANNEL</p>
         <h1 className="glitch-title" data-text="回响">回响</h1>
-        <p className="subtitle">进入管理提交页填写学生信息，或进入视频展示页自动轮播播放作品、封面和总结。</p>
+        <p className="subtitle">进入视频展示页自动轮播播放作品、封面和总结。</p>
         <div className="hero-actions">
-          <a className="primary-action" href="/admin">
-            <UserRound />
-            管理提交页
-          </a>
           <a className="ghost-action" href="/display">
             <Play />
             视频展示页
@@ -527,10 +523,6 @@ function DisplayPage() {
           <p className="subtitle">点击开始后，视频将按顺序自动播放。每播完一位同学，画面会向左滑到下一位，封面与文字同步切换。</p>
         </div>
         <div className="display-header-actions">
-          <a className="ghost-action" href="/admin">
-            <UserRound />
-            管理提交页
-          </a>
           <button className="ghost-action" type="button" onClick={() => void load()}>
             <RefreshCw />
             刷新数据
@@ -654,16 +646,12 @@ function PlaybackPage() {
           </div>
           <p className="eyebrow">FINAL REVIEW CHANNEL</p>
           <h1 className="glitch-title" data-text="回响">回响</h1>
-          <p className="subtitle">公开页面直接读取活动后端的节目单、作品列表和课程总结，管理提交页负责录入学生信息与作品。</p>
+          <p className="subtitle">公开页面直接读取活动后端的节目单、作品列表和课程总结，提交页用于录入学生信息与作品。</p>
           <div className="loading-track" aria-hidden="true"><span /></div>
           <div className="hero-actions">
             <a className="primary-action" href="/display">
               <Play />
               进入视频展示页
-            </a>
-            <a className="ghost-action" href="/admin">
-              <UploadCloud />
-              进入管理提交页
             </a>
             <button className="ghost-action" type="button" onClick={() => void load()}>
               <RefreshCw />
@@ -1162,32 +1150,6 @@ function UploadPage() {
           />
         </div>
 
-        <div className="role-field">
-          <span className="field-label">工作人员职能（可多选）</span>
-          <div className="role-chip-grid">
-            {roleOptions.map((role) => (
-              <button
-                className={form.roles.includes(role) ? 'role-chip selected' : 'role-chip'}
-                type="button"
-                key={role}
-                onClick={() => toggleRole(role)}
-              >
-                {role}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <label className="field-label" htmlFor="reflection-note">职位感悟</label>
-        <textarea
-          id="reflection-note"
-          value={form.textSummary}
-          onChange={(event) => setForm((current) => ({ ...current, textSummary: event.target.value }))}
-          placeholder="写下你在本次岗位中的感悟与反思"
-          rows={4}
-          required
-        />
-
         <div className="camera-recorder">
           <div className="camera-preview">
             {recordedUrl ? (
@@ -1304,6 +1266,33 @@ function UploadPage() {
             </div>
           ))}
         </div>
+
+        <div className="role-field">
+          <span className="field-label">工作人员职能（可多选）</span>
+          <div className="role-chip-grid">
+            {roleOptions.map((role) => (
+              <button
+                className={form.roles.includes(role) ? 'role-chip selected' : 'role-chip'}
+                type="button"
+                key={role}
+                onClick={() => toggleRole(role)}
+              >
+                {role}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <label className="field-label" htmlFor="reflection-note">职位感悟</label>
+        <textarea
+          id="reflection-note"
+          value={form.textSummary}
+          onChange={(event) => setForm((current) => ({ ...current, textSummary: event.target.value }))}
+          placeholder="写下你在本次岗位中的感悟与反思"
+          rows={4}
+          required
+        />
+
         <p className="form-message">至少填写一组作品网页链接，并为该作品上传本地封面。封面会自动压缩后写入提交内容。</p>
 
         <p className="form-message">默认直连活动后端：{eventApiBase}</p>
