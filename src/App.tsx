@@ -42,28 +42,31 @@ type StudentRecord = {
   updatedAt?: string;
 };
 
-type UploadInitResponse = {
-  uploadId: string;
-  objectKey: string;
-  uploadUrl: string;
-  publicUrl: string;
-  expiresAt?: string;
+type BootstrapResponse = {
+  program: Program;
+  works: Work[];
+  summaries: Summary[];
+  students: StudentRecord[];
+  updatedAt?: string;
 };
 
-type CoverUploadResponse = {
-  ok?: boolean;
-  publicUrl: string;
+type UploadResponse = {
+  uploadId: string;
   objectKey: string;
+  publicUrl: string;
   fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  assetKind: string;
 };
 
 type UploadState = 'idle' | 'uploading' | 'uploaded' | 'error';
 type SubmitState = 'idle' | 'submitting' | 'submitted' | 'error';
 type RecordingState = 'idle' | 'camera-ready' | 'recording' | 'recorded' | 'error';
 
-const defaultEventApiBase = 'https://show-plan-event-backend.liucheng-show-plan.workers.dev';
-const eventApiBase = (import.meta.env.VITE_EVENT_API_BASE || defaultEventApiBase).replace(/\/+$/, '');
-const roleOptions = ['音乐', '交互', '视觉', '导演', '海报', '字幕旁白', '后端技术', '场务', '指导老师'];
+const defaultEventApiBase = 'https://review-api.saintmob.workers.dev';
+const eventApiBase = (import.meta.env.VITE_REVIEW_API_BASE || defaultEventApiBase).replace(/\/+$/, '');
+const roleOptions = ['音乐', '交互', '视觉', '导演', '海报', '字幕旁白', '技术支持', '场务', '指导老师'];
 
 const initialForm = {
   fullName: '',
@@ -77,6 +80,219 @@ const initialForm = {
   videoWidth: 0,
   videoHeight: 0,
 };
+
+type DraftWorkSlot = {
+  workUrl: string;
+  fileName: string;
+};
+
+type DraftSnapshot = {
+  form: typeof initialForm;
+  workSlots: DraftWorkSlot[];
+  updatedAt: string;
+};
+
+type DraftBlobRecord = {
+  key: string;
+  blob: Blob;
+  fileName: string;
+  updatedAt: number;
+};
+
+const DRAFT_STORAGE_KEY = 'review-upload-draft-v2';
+const DRAFT_DB_NAME = 'review-upload-draft-files-v1';
+const DRAFT_DB_STORE = 'files';
+const DRAFT_VIDEO_BLOB_KEY = 'video-summary';
+const DRAFT_WORK_BLOB_KEYS = ['work-cover-1', 'work-cover-2'] as const;
+let draftDbPromise: Promise<IDBDatabase> | null = null;
+
+function hasBrowserStorage() {
+  return typeof window !== 'undefined' && typeof localStorage !== 'undefined' && typeof indexedDB !== 'undefined';
+}
+
+function cloneInitialForm() {
+  return {
+    ...initialForm,
+    roles: [...initialForm.roles],
+  };
+}
+
+function serializeDraftSnapshot(form: typeof initialForm, workSlots: WorkSlotState[]): DraftSnapshot {
+  return {
+    form: {
+      ...form,
+      roles: [...form.roles],
+    },
+    workSlots: workSlots.map((slot) => ({
+      workUrl: slot.workUrl,
+      fileName: slot.fileName,
+    })),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function buildDraftSignature(form: typeof initialForm, workSlots: WorkSlotState[]) {
+  return JSON.stringify({
+    form: {
+      ...form,
+      roles: [...form.roles],
+    },
+    workSlots: workSlots.map((slot) => ({
+      workUrl: slot.workUrl,
+      fileName: slot.fileName,
+    })),
+  });
+}
+
+function readDraftSnapshot(): DraftSnapshot | null {
+  if (!hasBrowserStorage()) return null;
+
+  try {
+    const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<DraftSnapshot>;
+    if (!parsed || typeof parsed !== 'object') return null;
+
+    return {
+      form: {
+        ...cloneInitialForm(),
+        ...(parsed.form || {}),
+        roles: Array.isArray(parsed.form?.roles) ? parsed.form!.roles.filter((item) => typeof item === 'string') : [],
+      },
+      workSlots: Array.isArray(parsed.workSlots)
+        ? parsed.workSlots.slice(0, 2).map((slot) => ({
+            workUrl: typeof slot?.workUrl === 'string' ? slot.workUrl : '',
+            fileName: typeof slot?.fileName === 'string' ? slot.fileName : '',
+          }))
+        : [],
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date(0).toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeDraftSnapshot(snapshot: DraftSnapshot) {
+  if (!hasBrowserStorage()) return;
+  localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(snapshot));
+}
+
+function clearDraftSnapshot() {
+  if (!hasBrowserStorage()) return;
+  localStorage.removeItem(DRAFT_STORAGE_KEY);
+}
+
+function openDraftDatabase() {
+  if (!hasBrowserStorage()) {
+    return Promise.reject(new Error('浏览器存储不可用'));
+  }
+
+  if (!draftDbPromise) {
+    draftDbPromise = new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(DRAFT_DB_NAME, 1);
+
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(DRAFT_DB_STORE)) {
+          db.createObjectStore(DRAFT_DB_STORE, { keyPath: 'key' });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error('无法打开草稿存储'));
+      request.onblocked = () => reject(new Error('草稿存储正在被其他标签页占用'));
+    });
+  }
+
+  return draftDbPromise;
+}
+
+async function readDraftBlob(key: string) {
+  const db = await openDraftDatabase();
+  return await new Promise<DraftBlobRecord | null>((resolve, reject) => {
+    const tx = db.transaction(DRAFT_DB_STORE, 'readonly');
+    const store = tx.objectStore(DRAFT_DB_STORE);
+    const request = store.get(key);
+
+    request.onsuccess = () => {
+      const value = request.result as DraftBlobRecord | undefined;
+      resolve(value || null);
+    };
+    request.onerror = () => reject(request.error || new Error('读取草稿文件失败'));
+  });
+}
+
+async function writeDraftBlob(key: string, blob: Blob, fileName: string) {
+  const db = await openDraftDatabase();
+  return await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(DRAFT_DB_STORE, 'readwrite');
+    const store = tx.objectStore(DRAFT_DB_STORE);
+    const request = store.put({
+      key,
+      blob,
+      fileName,
+      updatedAt: Date.now(),
+    } satisfies DraftBlobRecord);
+
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error || new Error('保存草稿文件失败'));
+  });
+}
+
+async function deleteDraftBlob(key: string) {
+  const db = await openDraftDatabase();
+  return await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(DRAFT_DB_STORE, 'readwrite');
+    const store = tx.objectStore(DRAFT_DB_STORE);
+    const request = store.delete(key);
+
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error || new Error('删除草稿文件失败'));
+  });
+}
+
+async function clearDraftBlobs() {
+  const db = await openDraftDatabase();
+  return await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(DRAFT_DB_STORE, 'readwrite');
+    const store = tx.objectStore(DRAFT_DB_STORE);
+    const request = store.clear();
+
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error || new Error('清理草稿文件失败'));
+  });
+}
+
+function draftWorkBlobKey(index: number) {
+  return DRAFT_WORK_BLOB_KEYS[index] || `work-cover-${index + 1}`;
+}
+
+function createFileFromBlob(blob: Blob, fileName: string) {
+  return new File([blob], fileName || 'file.bin', {
+    type: blob.type || 'application/octet-stream',
+    lastModified: Date.now(),
+  });
+}
+
+function hasDraftContent(form: typeof initialForm, workSlots: WorkSlotState[], recordedBlob: Blob | null) {
+  if (
+    form.fullName.trim() ||
+    form.roles.length ||
+    form.textSummary.trim() ||
+    form.videoSummaryUrl.trim() ||
+    form.uploadId.trim() ||
+    form.objectKey.trim() ||
+    form.sizeBytes ||
+    form.durationMs ||
+    form.videoWidth ||
+    form.videoHeight
+  ) {
+    return true;
+  }
+
+  if (recordedBlob) return true;
+
+  return workSlots.some((slot) => slot.workUrl.trim() || slot.file || slot.fileName.trim());
+}
 
 function createEmptyWorkSlot(): WorkSlotState {
   return {
@@ -95,10 +311,6 @@ function buildApiUrl(path: string) {
   return `${eventApiBase}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
-function buildLocalApiUrl(path: string) {
-  return `${window.location.origin}${path.startsWith('/') ? path : `/${path}`}`;
-}
-
 function sanitizeUploadName(value: string) {
   const extension = value.includes('.') ? `.${value.split('.').pop()}` : '';
   const baseName = value
@@ -106,7 +318,7 @@ function sanitizeUploadName(value: string) {
     .replace(/[^a-z0-9._-]+/gi, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 80);
-  return `${baseName || 'reflection'}${extension || '.bin'}`;
+  return `${baseName || 'submission'}${extension || '.bin'}`;
 }
 
 function formatFileSize(bytes: number) {
@@ -145,7 +357,7 @@ function loadImage(src: string) {
   });
 }
 
-async function readCoverImageDataUrl(file: File) {
+async function readCoverImageBlob(file: File) {
   const objectUrl = URL.createObjectURL(file);
 
   try {
@@ -165,22 +377,32 @@ async function readCoverImageDataUrl(file: File) {
     context.fillStyle = '#ffffff';
     context.fillRect(0, 0, width, height);
     context.drawImage(image, 0, 0, width, height);
-    return canvas.toDataURL('image/jpeg', 0.82);
+    return await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          reject(new Error('无法处理封面图片'));
+          return;
+        }
+        resolve(blob);
+      }, 'image/jpeg', 0.82);
+    });
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
 }
 
 async function uploadCoverImage(file: File, workIndex: number) {
-  const dataUrl = await readCoverImageDataUrl(file);
-  return localApi<CoverUploadResponse>('/api/uploads/cover', {
-    method: 'POST',
-    body: {
-      fileName: sanitizeUploadName(file.name || `cover-${workIndex + 1}.jpg`),
-      contentType: 'image/jpeg',
-      dataUrl,
-      workIndex: workIndex + 1,
+  const blob = await readCoverImageBlob(file);
+  return uploadFileToWorker({
+    file: blob,
+    filename: sanitizeUploadName(`cover-${workIndex + 1}.jpg`),
+    contentType: 'image/jpeg',
+    assetKind: 'work-cover',
+    workIndex: workIndex + 1,
+    metadata: {
+      source: 'review-student-client',
     },
+    onProgress: () => {},
   });
 }
 
@@ -204,11 +426,11 @@ async function readJsonResponse<T>(response: Response): Promise<T> {
   }
 }
 
-async function api<T>(path: string, options: { method?: string; body?: unknown } = {}) {
+async function api<T>(path: string, options: { method?: string; body?: unknown | FormData } = {}) {
   const response = await fetch(buildApiUrl(path), {
     method: options.method ?? 'GET',
-    headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
-    body: options.body ? JSON.stringify(options.body) : undefined,
+    headers: options.body && !(options.body instanceof FormData) ? { 'Content-Type': 'application/json' } : undefined,
+    body: options.body instanceof FormData ? options.body : options.body ? JSON.stringify(options.body) : undefined,
   });
   const payload = await readJsonResponse<T & { error?: string }>(response);
 
@@ -219,87 +441,34 @@ async function api<T>(path: string, options: { method?: string; body?: unknown }
   return payload;
 }
 
-async function localApi<T>(path: string, options: { method?: string; body?: unknown } = {}) {
-  const response = await fetch(buildLocalApiUrl(path), {
-    method: options.method ?? 'GET',
-    headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
-  const payload = await readJsonResponse<T & { error?: string }>(response);
-
-  if (!response.ok) {
-    throw new Error(payload.error || `请求失败：HTTP ${response.status}`);
-  }
-
-  return payload;
-}
-
-async function requestUploadInit(input: {
-  filename: string;
-  contentType: string;
-  sizeBytes: number;
-  externalUserId: string;
-  durationMs?: number;
-  width?: number;
-  height?: number;
-  metadata?: Record<string, string | number | boolean>;
-}) {
-  return api<UploadInitResponse>('/api/uploads/init', {
-    method: 'POST',
-    body: input,
-  });
-}
-
-async function completeUpload(uploadId: string) {
-  return api<{ ok?: boolean; publicUrl?: string }>('/api/uploads/complete', {
-    method: 'POST',
-    body: { uploadId },
-  });
-}
-
-async function uploadFileToStorage(input: {
+async function uploadFileToWorker(input: {
   file: Blob;
   filename: string;
   contentType: string;
-  externalUserId: string;
+  assetKind: 'video-summary' | 'work-cover';
+  fullName?: string;
+  workIndex?: number;
   durationMs?: number;
   width?: number;
   height?: number;
-  metadata?: Record<string, string | number | boolean>;
+  metadata?: Record<string, string | number | boolean | undefined>;
   onProgress: (percentage: number) => void;
 }) {
-  const upload = await requestUploadInit({
-    filename: input.filename,
-    contentType: input.contentType,
-    sizeBytes: input.file.size,
-    externalUserId: input.externalUserId,
-    durationMs: input.durationMs,
-    width: input.width,
-    height: input.height,
-    metadata: input.metadata,
-  });
+  return new Promise<UploadResponse>((resolve, reject) => {
+    const formData = new FormData();
+    formData.append('file', input.file, input.filename);
+    formData.append('fileName', input.filename);
+    formData.append('contentType', input.contentType);
+    formData.append('assetKind', input.assetKind);
+    if (input.fullName) formData.append('fullName', input.fullName);
+    if (typeof input.workIndex === 'number') formData.append('workIndex', String(input.workIndex));
+    if (typeof input.durationMs === 'number') formData.append('durationMs', String(input.durationMs));
+    if (typeof input.width === 'number') formData.append('width', String(input.width));
+    if (typeof input.height === 'number') formData.append('height', String(input.height));
+    if (input.metadata) formData.append('metadata', JSON.stringify(input.metadata));
 
-  await putBlobToUploadUrl({
-    uploadUrl: upload.uploadUrl,
-    blob: input.file,
-    contentType: input.contentType,
-    onProgress: input.onProgress,
-  });
-  await completeUpload(upload.uploadId);
-
-  return upload;
-}
-
-function putBlobToUploadUrl(input: {
-  uploadUrl: string;
-  blob: Blob;
-  contentType: string;
-  onProgress: (percentage: number) => void;
-}) {
-  return new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('PUT', input.uploadUrl);
-    xhr.setRequestHeader('Content-Type', input.contentType);
+    xhr.open('POST', buildApiUrl('/api/uploads'));
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) {
         input.onProgress(Math.round((event.loaded / event.total) * 100));
@@ -307,19 +476,28 @@ function putBlobToUploadUrl(input: {
     };
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
-        resolve();
+        try {
+          resolve(JSON.parse(xhr.responseText || '{}') as UploadResponse);
+        } catch {
+          reject(new Error('上传响应解析失败'));
+        }
         return;
       }
-      reject(new Error(`文件上传失败：HTTP ${xhr.status}`));
+      try {
+        const payload = JSON.parse(xhr.responseText || '{}') as { error?: string };
+        reject(new Error(payload.error || `文件上传失败：HTTP ${xhr.status}`));
+      } catch {
+        reject(new Error(`文件上传失败：HTTP ${xhr.status}`));
+      }
     };
     xhr.onerror = () => reject(new Error('文件上传失败，请检查网络或跨域配置'));
-    xhr.send(input.blob);
+    xhr.send(formData);
   });
 }
 
 function getUploadErrorMessage(error: unknown) {
   const message = error instanceof Error ? error.message : String(error || '上传失败');
-  if (message.includes('HTTP 413')) return '文件过大，超过活动后端允许的大小限制。';
+  if (message.includes('HTTP 413')) return '文件过大，超过活动允许的大小限制。';
   return message;
 }
 
@@ -335,10 +513,10 @@ async function buildWorksPayload(workSlots: WorkSlotState[], onStatus?: (message
     }
 
     if (!workUrl) {
-      throw new Error(`作品 ${index + 1} 需要填写网页链接。`);
+      throw new Error(`作品 ${index + 1} 需要填写作品链接。`);
     }
     if (!isHttpsUrl(workUrl)) {
-      throw new Error(`作品 ${index + 1} 的网页链接必须是 HTTPS URL。`);
+      throw new Error(`作品 ${index + 1} 的链接请以 https 开头。`);
     }
     if (!slot.file) {
       throw new Error(`作品 ${index + 1} 需要从电脑本地上传封面图片。`);
@@ -354,7 +532,7 @@ async function buildWorksPayload(workSlots: WorkSlotState[], onStatus?: (message
   }
 
   if (!normalized.length) {
-    throw new Error('请至少填写 1 组作品网页链接并上传对应封面。');
+    throw new Error('请至少填写 1 组作品链接并上传对应封面。');
   }
 
   return normalized.slice(0, 2);
@@ -379,11 +557,11 @@ function LandingPage() {
     <section className="landing-page page-fade">
       <div className="landing-hero">
         <div className="signal-pills" aria-hidden="true">
-          <span>Student Client</span>
-          <span>Public Event API</span>
-          <span>{eventApiBase.replace(/^https?:\/\//, '')}</span>
+          <span>学生提交</span>
+          <span>作品展示</span>
+          <span>草稿保存</span>
         </div>
-        <p className="eyebrow">ENTRY CHANNEL</p>
+        <p className="eyebrow">入口</p>
         <h1 className="glitch-title" data-text="回响">回响</h1>
         <p className="subtitle">进入视频展示页查看作品、封面与感悟回顾。</p>
         <div className="hero-actions">
@@ -502,11 +680,11 @@ function DisplayPage() {
         <div className="display-header">
           <div>
             <div className="signal-pills" aria-hidden="true">
-              <span>Display Mode</span>
-              <span>Review Queue</span>
-              <span>{eventApiBase.replace(/^https?:\/\//, '')}</span>
+              <span>展示模式</span>
+              <span>作品轮播</span>
+              <span>公开浏览</span>
             </div>
-            <p className="eyebrow">VIDEO DISPLAY</p>
+            <p className="eyebrow">视频展示</p>
             <h1 className="glitch-title" data-text="展示">展示</h1>
             <p className="subtitle">点击开始后，当前学生视频会自动播放，结束后点右下角“下一位”切换到下一位同学。</p>
           </div>
@@ -535,7 +713,7 @@ function DisplayPage() {
                 <article className="display-slide" key={`${slide.id || slide.fullName}-${index}`}>
                   <div className="display-slide-grid">
                     <section className="display-video-panel">
-                      <div className="display-video-label">video</div>
+                      <div className="display-video-label">视频</div>
                       <video
                         ref={(node) => {
                           videoRefs.current[index] = node;
@@ -567,10 +745,10 @@ function DisplayPage() {
                       )}
                       {slide.workUrl ? (
                         <a className="display-link" href={slide.workUrl} target="_blank" rel="noreferrer">
-                          作品网址
+                          作品链接
                         </a>
                       ) : (
-                        <div className="display-link">作品网址待补充</div>
+                        <div className="display-link">作品链接待补充</div>
                       )}
                       <div className="display-meta-block">
                         <strong>{slide.fullName}</strong>
@@ -579,7 +757,7 @@ function DisplayPage() {
                     </aside>
 
                     <div className="display-summary-strip">
-                      <div className="display-summary-title">感悟总结。</div>
+                      <div className="display-summary-title">总结</div>
                       <p>{slide.textSummary || '这位同学尚未填写职位感悟。'}</p>
                     </div>
                   </div>
@@ -625,13 +803,13 @@ function PlaybackPage() {
       <section className="playback-hero page-fade">
         <div className="hero-copy">
           <div className="signal-pills" aria-hidden="true">
-            <span>Student Client</span>
-            <span>Public Event API</span>
-            <span>{eventApiBase.replace(/^https?:\/\//, '')}</span>
+            <span>学生提交</span>
+            <span>作品展示</span>
+            <span>公开浏览</span>
           </div>
-          <p className="eyebrow">FINAL REVIEW CHANNEL</p>
+          <p className="eyebrow">公开浏览</p>
           <h1 className="glitch-title" data-text="回响">回响</h1>
-          <p className="subtitle">公开页面直接读取活动后端的节目单、作品列表和课程总结，提交页用于录入学生信息与作品。</p>
+          <p className="subtitle">这里汇总节目单、作品和总结；提交页用于录入学生信息与作品。</p>
           <div className="loading-track" aria-hidden="true"><span /></div>
           <div className="hero-actions">
             <a className="primary-action" href="/display">
@@ -640,7 +818,7 @@ function PlaybackPage() {
             </a>
             <button className="ghost-action" type="button" onClick={() => void load()}>
               <RefreshCw />
-              刷新公开数据
+              刷新内容
             </button>
           </div>
           {message && <p className="terminal-line"><i /> {message}</p>}
@@ -650,7 +828,7 @@ function PlaybackPage() {
       <section className="archive-section playback-section">
         <div className="section-heading">
           <div>
-            <p className="eyebrow">PUBLIC SNAPSHOT</p>
+            <p className="eyebrow">公开概览</p>
             <h2>节目单、作品与总结</h2>
           </div>
         </div>
@@ -658,7 +836,7 @@ function PlaybackPage() {
         {latestSummary && (
           <article className="featured-player">
             <div>
-              <p className="eyebrow">LATEST SUMMARY</p>
+              <p className="eyebrow">最新总结</p>
               <h3>{latestSummary.fullName}</h3>
               <p>{latestSummary.textSummary || '这位同学暂未填写文本总结。'}</p>
               <p className="meta-line">提交时间：{formatTimestamp(latestSummary.createdAt)}</p>
@@ -681,7 +859,7 @@ function PlaybackPage() {
                 ))}
               </ol>
             ) : (
-              <p>后台尚未配置节目单。</p>
+              <p>暂时还没有节目单。</p>
             )}
           </article>
 
@@ -689,7 +867,7 @@ function PlaybackPage() {
             <div className="card-index">02</div>
             <h3>作品列表</h3>
             {isLoading && !data.works.length ? (
-              <p>正在同步作品列表...</p>
+              <p>正在载入作品列表...</p>
             ) : data.works.length ? (
               <div className="work-link-list">
                 {data.works.map((work) => (
@@ -708,7 +886,7 @@ function PlaybackPage() {
             <div className="card-index">03</div>
             <h3>总结列表</h3>
             {isLoading && !data.summaries.length ? (
-              <p>正在同步课程总结...</p>
+              <p>正在载入总结...</p>
             ) : data.summaries.length ? (
               <div className="summary-link-list">
                 {data.summaries.map((summary) => (
@@ -747,10 +925,162 @@ function UploadPage() {
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
   const [recordedUrl, setRecordedUrl] = useState('');
   const [message, setMessage] = useState('');
+  const [draftLoaded, setDraftLoaded] = useState(false);
+  const lastDraftSignatureRef = useRef('');
+  const lastWorkFileRefs = useRef<Array<File | null>>([null, null]);
+  const lastRecordedBlobRef = useRef<Blob | null>(null);
+  const recordedFileNameRef = useRef('');
 
   useEffect(() => {
     workSlotsRef.current = workSlots;
   }, [workSlots]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const emptySignature = buildDraftSignature(cloneInitialForm(), createInitialWorkSlots());
+
+    async function restoreDraft() {
+      if (!hasBrowserStorage()) {
+        lastDraftSignatureRef.current = emptySignature;
+        lastWorkFileRefs.current = [null, null];
+        lastRecordedBlobRef.current = null;
+        setDraftLoaded(true);
+        return;
+      }
+
+      const snapshot = readDraftSnapshot();
+      if (!snapshot) {
+        lastDraftSignatureRef.current = emptySignature;
+        lastWorkFileRefs.current = [null, null];
+        lastRecordedBlobRef.current = null;
+        setDraftLoaded(true);
+        return;
+      }
+
+      const restoredWorkSlots: WorkSlotState[] = [];
+      for (let index = 0; index < 2; index += 1) {
+        const snapshotSlot = snapshot.workSlots[index];
+        const blobRecord = await readDraftBlob(draftWorkBlobKey(index));
+
+        if (blobRecord?.blob) {
+          const fileName = blobRecord.fileName || snapshotSlot?.fileName || `cover-${index + 1}.jpg`;
+          const file = createFileFromBlob(blobRecord.blob, fileName);
+          restoredWorkSlots.push({
+            workUrl: snapshotSlot?.workUrl || '',
+            file,
+            fileName,
+            previewUrl: URL.createObjectURL(file),
+          });
+          continue;
+        }
+
+        restoredWorkSlots.push({
+          workUrl: snapshotSlot?.workUrl || '',
+          file: null,
+          fileName: snapshotSlot?.fileName || '',
+          previewUrl: '',
+        });
+      }
+
+      const videoRecord = await readDraftBlob(DRAFT_VIDEO_BLOB_KEY);
+      const restoredRecordedBlob = videoRecord?.blob ?? null;
+      const restoredRecordedUrl = restoredRecordedBlob ? URL.createObjectURL(restoredRecordedBlob) : '';
+      const restoredForm = {
+        ...cloneInitialForm(),
+        ...snapshot.form,
+        roles: Array.isArray(snapshot.form.roles) ? snapshot.form.roles.filter((item) => typeof item === 'string') : [],
+      };
+
+      if (cancelled) {
+        restoredWorkSlots.forEach((slot) => {
+          if (slot.previewUrl) URL.revokeObjectURL(slot.previewUrl);
+        });
+        if (restoredRecordedUrl) URL.revokeObjectURL(restoredRecordedUrl);
+        return;
+      }
+
+      workSlotsRef.current = restoredWorkSlots;
+      recordedUrlRef.current = restoredRecordedUrl;
+      recordedFileNameRef.current = videoRecord?.fileName || '';
+      lastDraftSignatureRef.current = buildDraftSignature(restoredForm, restoredWorkSlots);
+      lastWorkFileRefs.current = restoredWorkSlots.map((slot) => slot.file);
+      lastRecordedBlobRef.current = restoredRecordedBlob;
+
+      setForm(restoredForm);
+      setWorkSlots(restoredWorkSlots);
+      setRecordedBlob(restoredRecordedBlob);
+      setRecordedUrl(restoredRecordedUrl);
+      setUploadState(restoredForm.videoSummaryUrl ? 'uploaded' : 'idle');
+      setRecordingState(restoredRecordedBlob || restoredForm.videoSummaryUrl ? 'recorded' : 'idle');
+      setSubmitState('idle');
+      if (hasDraftContent(restoredForm, restoredWorkSlots, restoredRecordedBlob)) {
+        setMessage('已恢复上次填写内容。');
+      }
+      setDraftLoaded(true);
+    }
+
+    void restoreDraft().catch(() => {
+      if (!cancelled) {
+        lastDraftSignatureRef.current = emptySignature;
+        lastWorkFileRefs.current = [null, null];
+        lastRecordedBlobRef.current = null;
+        setDraftLoaded(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!draftLoaded) return;
+
+    const signature = buildDraftSignature(form, workSlots);
+    if (signature === lastDraftSignatureRef.current) return;
+    lastDraftSignatureRef.current = signature;
+
+    if (!hasDraftContent(form, workSlots, recordedBlob)) {
+      clearDraftSnapshot();
+      return;
+    }
+
+    writeDraftSnapshot(serializeDraftSnapshot(form, workSlots));
+  }, [draftLoaded, form, workSlots, recordedBlob]);
+
+  useEffect(() => {
+    if (!draftLoaded) return;
+
+    workSlots.forEach((slot, index) => {
+      const currentFile = slot.file;
+      if (lastWorkFileRefs.current[index] === currentFile) return;
+      lastWorkFileRefs.current[index] = currentFile;
+
+      if (!currentFile) {
+        void deleteDraftBlob(draftWorkBlobKey(index)).catch(() => {});
+        return;
+      }
+
+      void writeDraftBlob(draftWorkBlobKey(index), currentFile, currentFile.name).catch(() => {});
+    });
+  }, [draftLoaded, workSlots]);
+
+  useEffect(() => {
+    if (!draftLoaded) return;
+
+    if (lastRecordedBlobRef.current === recordedBlob) return;
+    lastRecordedBlobRef.current = recordedBlob;
+
+    if (!recordedBlob) {
+      recordedFileNameRef.current = '';
+      void deleteDraftBlob(DRAFT_VIDEO_BLOB_KEY).catch(() => {});
+      return;
+    }
+
+    const fileName = recordedFileNameRef.current || sanitizeUploadName(`summary-${Date.now()}.webm`);
+    recordedFileNameRef.current = fileName;
+    void writeDraftBlob(DRAFT_VIDEO_BLOB_KEY, recordedBlob, fileName).catch(() => {});
+  }, [draftLoaded, recordedBlob]);
 
   useEffect(() => {
     return () => {
@@ -905,8 +1235,10 @@ function UploadPage() {
       const blob = new Blob(chunksRef.current, { type: mimeType || 'video/webm' });
       const durationMs = Math.max(0, Math.round(performance.now() - recordStartedAtRef.current));
       if (recordedUrlRef.current) URL.revokeObjectURL(recordedUrlRef.current);
+      const fileName = sanitizeUploadName(`summary-${Date.now()}.webm`);
       const url = URL.createObjectURL(blob);
       recordedUrlRef.current = url;
+      recordedFileNameRef.current = fileName;
       setRecordedBlob(blob);
       setRecordedUrl(url);
       setForm((current) => ({
@@ -943,6 +1275,7 @@ function UploadPage() {
   function resetRecording() {
     if (recordedUrlRef.current) URL.revokeObjectURL(recordedUrlRef.current);
     recordedUrlRef.current = '';
+    recordedFileNameRef.current = '';
     setRecordedBlob(null);
     setRecordedUrl('');
     setForm((current) => ({
@@ -967,18 +1300,20 @@ function UploadPage() {
       return;
     }
 
-    const filename = sanitizeUploadName(`summary-${Date.now()}.webm`);
+    const filename = recordedFileNameRef.current || sanitizeUploadName(`summary-${Date.now()}.webm`);
+    recordedFileNameRef.current = filename;
     const contentType = 'video/webm';
     setUploadState('uploading');
     setSubmitState('idle');
-    setMessage('正在初始化视频上传...');
+    setMessage('正在上传视频总结...');
 
     try {
-      const upload = await uploadFileToStorage({
+      const upload = await uploadFileToWorker({
         file: recordedBlob,
         filename,
         contentType,
-        externalUserId: form.fullName.trim() || `student:${Date.now()}`,
+        assetKind: 'video-summary',
+        fullName: form.fullName.trim() || `student:${Date.now()}`,
         durationMs: form.durationMs || undefined,
         width: form.videoWidth || undefined,
         height: form.videoHeight || undefined,
@@ -989,7 +1324,7 @@ function UploadPage() {
           originalMimeType: recordedBlob.type || 'video/webm',
         },
         onProgress: (percentage) => {
-          setMessage(`正在上传到活动后端视频存储... ${percentage}%`);
+          setMessage(`正在上传视频... ${percentage}%`);
         },
       });
 
@@ -1052,7 +1387,7 @@ function UploadPage() {
       if (!isHttpsUrl(form.videoSummaryUrl.trim())) throw new Error('视频上传失败，请重试。');
       const works = await buildWorksPayload(workSlotsRef.current, (status) => setMessage(status));
 
-      setMessage('正在提交到活动后端...');
+      setMessage('正在保存提交内容...');
       const payload = await api<{ ok?: boolean; student?: { id: string } }>('/api/students', {
         method: 'POST',
         body: {
@@ -1060,6 +1395,12 @@ function UploadPage() {
           roles: form.roles,
           textSummary: form.textSummary.trim(),
           videoSummaryUrl: form.videoSummaryUrl.trim(),
+          videoUploadId: form.uploadId,
+          videoObjectKey: form.objectKey,
+          videoSizeBytes: form.sizeBytes,
+          videoDurationMs: form.durationMs,
+          videoWidth: form.videoWidth,
+          videoHeight: form.videoHeight,
           works,
         },
       });
@@ -1073,12 +1414,18 @@ function UploadPage() {
       }
       setRecordedBlob(null);
       setRecordedUrl('');
+      recordedFileNameRef.current = '';
+      lastRecordedBlobRef.current = null;
+      lastWorkFileRefs.current = [null, null];
+      lastDraftSignatureRef.current = buildDraftSignature(cloneInitialForm(), createInitialWorkSlots());
+      clearDraftSnapshot();
+      void clearDraftBlobs().catch(() => {});
       setForm(initialForm);
       clearWorkSlots();
       setUploadState('idle');
       setRecordingState('idle');
       setSubmitState('submitted');
-      setMessage('提交完成，公开页面刷新后即可看到新的总结和作品。');
+      setMessage('提交完成，公开页面更新后即可看到新的总结和作品。');
     } catch (error) {
       setSubmitState('error');
       setMessage(error instanceof Error ? error.message : '提交失败');
@@ -1086,26 +1433,26 @@ function UploadPage() {
   }
 
   const statusText = useMemo(() => {
-    if (recordingState === 'recording') return 'RECORDING 720P';
-    if (recordingState === 'recorded') return 'RECORDING READY';
-    if (uploadState === 'uploading') return 'UPLOADING MEDIA TO EVENT BACKEND';
-    if (uploadState === 'uploaded') return 'VIDEO URL READY';
-    if (submitState === 'submitting') return 'SUBMITTING STUDENT RECORD';
-    if (submitState === 'submitted') return 'SUBMITTED';
-    return 'WAITING FOR CAMERA';
+    if (recordingState === 'recording') return '录制中';
+    if (recordingState === 'recorded') return '已录制';
+    if (uploadState === 'uploading') return '上传中';
+    if (uploadState === 'uploaded') return '已上传';
+    if (submitState === 'submitting') return '保存中';
+    if (submitState === 'submitted') return '已提交';
+    return '等待摄像头';
   }, [recordingState, submitState, uploadState]);
 
   return (
     <section className="upload-page page-fade">
       <div className="upload-intro">
         <div className="signal-pills" aria-hidden="true">
-          <span>Submit Student</span>
-          <span>Public Event API</span>
-          <span>Local Image Upload</span>
+          <span>学生提交</span>
+          <span>作品封面</span>
+          <span>视频总结</span>
         </div>
-        <p className="eyebrow">UPLOAD CHANNEL</p>
+        <p className="eyebrow">提交页</p>
         <h1 className="glitch-title upload-title" data-text="上传">上传</h1>
-        <p className="subtitle">填写姓名、职能、作品网页链接和本地封面，再录制并上传视频总结。</p>
+        <p className="subtitle">填写姓名、职能、作品链接和封面，再录制并保存视频总结。</p>
         <div className="hero-actions">
           <a className="ghost-action" href="/">返回入口页</a>
         </div>
@@ -1115,7 +1462,7 @@ function UploadPage() {
       <form className="upload-console" onSubmit={handleSubmit}>
         <div className="console-heading">
           <div>
-            <p className="eyebrow">SUBMIT A STUDENT</p>
+            <p className="eyebrow">填写信息</p>
             <h2>管理提交页</h2>
           </div>
           <UploadCloud aria-hidden="true" />
@@ -1135,12 +1482,12 @@ function UploadPage() {
 
         <div className="camera-recorder">
           <div className="camera-preview">
-            {recordedUrl ? (
-              <video src={recordedUrl} controls playsInline autoPlay />
+            {recordedUrl || form.videoSummaryUrl ? (
+              <video src={recordedUrl || form.videoSummaryUrl} controls playsInline autoPlay />
             ) : (
               <>
                 <video ref={liveVideoRef} autoPlay muted playsInline />
-                {recordingState === 'idle' && <span>FRONT CAMERA</span>}
+                {recordingState === 'idle' && <span>前置摄像头</span>}
               </>
             )}
           </div>
@@ -1189,7 +1536,7 @@ function UploadPage() {
           {workSlots.map((slot, index) => (
             <div className="work-upload-card" key={index}>
               <div className="work-upload-head">
-                <label className="field-label" htmlFor={`work-url-${index}`}>作品网页链接 {index + 1}</label>
+                <label className="field-label" htmlFor={`work-url-${index}`}>作品链接 {index + 1}</label>
                 <span className="upload-status idle">可跳转</span>
               </div>
               <input
@@ -1202,9 +1549,9 @@ function UploadPage() {
                     current.map((currentSlot, slotIndex) =>
                       slotIndex === index ? { ...currentSlot, workUrl: event.target.value } : currentSlot,
                     ),
-                  )
+                )
                 }
-                placeholder="https://..."
+                placeholder="填写作品链接"
               />
 
               <div className="work-upload-head">
@@ -1276,14 +1623,12 @@ function UploadPage() {
           required
         />
 
-        <p className="form-message">至少填写一组作品网页链接，并为该作品上传本地封面。封面会自动压缩后写入提交内容。</p>
-
-        <p className="form-message">默认直连活动后端：{eventApiBase}</p>
+        <p className="form-message">至少填写一组作品链接，并为该作品上传本地封面。封面会自动压缩后写入提交内容。</p>
         {message && <p className={`form-message ${uploadState === 'error' || submitState === 'error' ? 'is-error' : ''}`}>{message}</p>}
 
         <button className="primary-action" type="submit" disabled={submitState === 'submitting'}>
           {submitState === 'submitting' ? <Loader2 className="spin" /> : <CheckCircle2 />}
-          提交到活动后端
+          保存到展示页
         </button>
       </form>
     </section>
@@ -1303,21 +1648,16 @@ function usePublicEventData() {
   async function load() {
     setIsLoading(true);
     try {
-      const [program, works, summaries, students] = await Promise.all([
-        api<{ program: Program }>('/api/program'),
-        api<{ works: Work[] }>('/api/works'),
-        api<{ summaries: Summary[] }>('/api/summaries'),
-        api<{ students: StudentRecord[] }>('/api/students'),
-      ]);
+      const bootstrap = await api<BootstrapResponse>('/api/bootstrap');
       setData({
-        program: program.program ?? { text: '', updatedAt: '' },
-        works: works.works ?? [],
-        summaries: summaries.summaries ?? [],
-        students: students.students ?? [],
+        program: bootstrap.program ?? { text: '', updatedAt: '' },
+        works: bootstrap.works ?? [],
+        summaries: bootstrap.summaries ?? [],
+        students: bootstrap.students ?? [],
       });
-      setMessage('公开数据已同步');
+      setMessage('页面内容已更新');
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '无法读取活动公开数据');
+      setMessage(error instanceof Error ? error.message : '暂时无法读取页面内容');
     } finally {
       setIsLoading(false);
     }
@@ -1337,10 +1677,10 @@ function usePublicEventData() {
 
 function MediaPlayer({ summary, featured = false }: { summary: Summary; featured?: boolean }) {
   return (
-    <div className={featured ? 'media-shell featured' : 'media-shell'}>
+      <div className={featured ? 'media-shell featured' : 'media-shell'}>
       <div className="media-badge">
         <Play />
-        VIDEO SUMMARY
+        视频总结
       </div>
       <video src={summary.videoSummaryUrl} controls playsInline />
       {!featured ? (

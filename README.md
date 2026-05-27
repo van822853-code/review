@@ -1,11 +1,20 @@
 # 回响
 
-`/` 现在是活动公开页，直接读取已部署活动后端的 `/api/program`、`/api/works`、`/api/summaries`。`/upload` 是学生端最小可用上传页：提交 `fullName`、多选 `roles`、`textSummary`、`videoSummaryUrl`、1-2 张本地作品图片，并保留现有前置摄像头 WebM 录制流程。
+`/` 是活动公开页，统一读取 Cloudflare Worker 的 `GET /api/bootstrap`。`/upload` 是学生端提交页，支持：
+
+- 学生姓名
+- 多选工作人员职能
+- 文本感悟
+- 摄像头录制的视频总结
+- 两组作品网页链接
+- 两张本地作品封面
+
+浏览器上传时不再直连 Firebase 或 Vercel Blob，所有文件都先发到 Worker，再由 Worker 写入 R2。
 
 默认活动后端：
 
 ```text
-https://show-plan-event-backend.liucheng-show-plan.workers.dev
+https://review-api.saintmob.workers.dev
 ```
 
 ## 本地运行
@@ -20,7 +29,7 @@ https://show-plan-event-backend.liucheng-show-plan.workers.dev
    ```
 3. 如需切换后端，设置：
    ```bash
-   VITE_EVENT_API_BASE="https://show-plan-event-backend.liucheng-show-plan.workers.dev"
+   VITE_REVIEW_API_BASE="https://review-api.saintmob.workers.dev"
    ```
 4. 启动开发环境：
    ```bash
@@ -31,18 +40,14 @@ https://show-plan-event-backend.liucheng-show-plan.workers.dev
 
 学生上传页：http://localhost:3000/upload
 
-## 学生端行为
+## 前端行为
 
-- 公开页直接跨域访问活动后端，不再依赖旧 Firestore reflection 模型。
+- 公开页一次性读取 `GET /api/bootstrap`，手动刷新时才重新拉取。
 - 上传页提交时调用 `POST /api/students`。
-- 作品封面改为本地文件选择，提交时先上传到 Firebase Storage，再把公开图片链接写入 `works.coverUrl`，不再要求填写图片链接。
-- 录制视频仍使用：
-  1. `POST /api/uploads/init`
-  2. 浏览器 `PUT uploadUrl`
-  3. `POST /api/uploads/complete`
-- 上传完成后的 `publicUrl` 会自动写入 `videoSummaryUrl`。
-- 本地封面上传需要配置 `FIREBASE_SERVICE_ACCOUNT_JSON` 和 `FIREBASE_STORAGE_BUCKET`。
+- 作品封面是本地文件，提交前会压缩后上传到 Worker，返回公开图片链接后写入 `works.coverUrl`。
+- 视频总结同样通过 `POST /api/uploads` 上传到 Worker，再把返回的公开链接写入 `videoSummaryUrl`。
+- 后端当前以 Cloudflare D1 + R2 为唯一运行时数据层，不再依赖 Firestore。
 
 ## 备注
 
-仓库里原有 `server.ts` 和 `api/*` 仍保留，便于不打断现有本地/部署方式；本次学生端已经改成前端直接访问活动后端，避免继续维护 reflection 的双套业务逻辑。
+仓库里原有 `server.ts` 和 `api/*` 仍保留作历史参考，但新的学生提交流程已经切到 Worker + D1 + R2。
