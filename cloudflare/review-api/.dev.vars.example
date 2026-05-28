@@ -1,0 +1,5 @@
+# Local-only runtime vars for `wrangler dev`.
+# Copy this file to `.dev.vars` before running the Worker locally.
+
+MAX_UPLOAD_BYTES="104857600"
+MEDIA_PREFIX="submissions"
