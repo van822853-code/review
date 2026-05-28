@@ -783,7 +783,7 @@ function DisplayPage() {
                       )}
                       {slide.workUrl ? (
                         <a className="display-link" href={slide.workUrl} target="_blank" rel="noreferrer">
-                          作品链接
+                          查看作品
                         </a>
                       ) : (
                         <div className="display-link">作品链接待补充</div>
