@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ChangeEvent, type FormEvent } from 'react';
-import { Camera, CheckCircle2, Circle, Loader2, Play, RefreshCw, RotateCcw, Square, UploadCloud, UserRound, Waves } from 'lucide-react';
+import { Camera, CheckCircle2, Circle, Home, LibraryBig, Loader2, MonitorPlay, Pause, Play, RefreshCw, RotateCcw, SkipBack, SkipForward, Square, UploadCloud, UserRound, Waves } from 'lucide-react';
 
 type Program = {
   text: string;
@@ -66,7 +66,7 @@ type RecordingState = 'idle' | 'camera-ready' | 'recording' | 'recorded' | 'erro
 
 const defaultEventApiBase = 'https://review-api.saintmob.workers.dev';
 const eventApiBase = (import.meta.env.VITE_REVIEW_API_BASE || defaultEventApiBase).replace(/\/+$/, '');
-const roleOptions = ['音乐', '交互', '视觉', '导演', '海报', '字幕旁白', '技术支持', '场务', '指导老师'];
+const roleOptions = Array.from(new Set(['音乐', '交互', '视觉', '导演', '海报', '字幕旁白', '技术支持', '场务', '指导老师']));
 
 const initialForm = {
   fullName: '',
@@ -117,6 +117,11 @@ function cloneInitialForm() {
   };
 }
 
+function normalizeRoles(value: unknown) {
+  const selected = Array.isArray(value) ? new Set(value.filter((item): item is string => typeof item === 'string')) : new Set<string>();
+  return roleOptions.filter((role) => selected.has(role));
+}
+
 function serializeDraftSnapshot(form: typeof initialForm, workSlots: WorkSlotState[]): DraftSnapshot {
   return {
     form: {
@@ -157,7 +162,7 @@ function readDraftSnapshot(): DraftSnapshot | null {
       form: {
         ...cloneInitialForm(),
         ...(parsed.form || {}),
-        roles: Array.isArray(parsed.form?.roles) ? parsed.form!.roles.filter((item) => typeof item === 'string') : [],
+        roles: normalizeRoles(parsed.form?.roles),
       },
       workSlots: Array.isArray(parsed.workSlots)
         ? parsed.workSlots.slice(0, 2).map((slot) => ({
@@ -541,6 +546,10 @@ function getUploadErrorMessage(error: unknown) {
   return message;
 }
 
+function getSummaryScrollDuration(text: string) {
+  return `${Math.min(64, Math.max(18, Math.ceil(text.length / 7)))}s`;
+}
+
 async function buildWorksPayload(workSlots: WorkSlotState[], onStatus?: (message: string) => void) {
   const normalized: Array<{ workUrl: string; coverUrl: string }> = [];
 
@@ -583,12 +592,40 @@ function App() {
   const isAdminPage = pathname === '/admin' || pathname === '/upload';
   const isDisplayPage = pathname === '/display' || pathname === '/videos' || pathname === '/video-carousel';
   const isPublicPage = pathname === '/public';
+  const pageKey = isAdminPage ? 'upload' : isDisplayPage ? 'display' : isPublicPage ? 'public' : 'home';
 
   return (
-    <main className="app">
+    <main className={`app page-${pageKey}`}>
       <AmbientStage />
+      <AppNav activePage={pageKey} />
       {isAdminPage ? <UploadPage /> : isDisplayPage ? <DisplayPage /> : isPublicPage ? <PlaybackPage /> : <LandingPage />}
     </main>
+  );
+}
+
+function AppNav({ activePage }: { activePage: 'home' | 'display' | 'public' | 'upload' }) {
+  const navItems = [
+    { key: 'home', label: '首页', href: '/', icon: Home },
+    { key: 'display', label: '现场', href: '/display', icon: MonitorPlay },
+    { key: 'public', label: '全部', href: '/public', icon: LibraryBig },
+    { key: 'upload', label: '提交', href: '/upload', icon: UploadCloud },
+  ] as const;
+
+  return (
+    <header className="app-nav">
+      <a className="app-brand" href="/" aria-label="回响入口">
+        <span>回响</span>
+        <small>课程总结播放</small>
+      </a>
+      <nav className="app-nav-links" aria-label="主导航">
+        {navItems.map(({ key, label, href, icon: Icon }) => (
+          <a className={activePage === key ? 'app-nav-link active' : 'app-nav-link'} href={href} aria-current={activePage === key ? 'page' : undefined} key={key}>
+            <Icon />
+            <span>{label}</span>
+          </a>
+        ))}
+      </nav>
+    </header>
   );
 }
 
@@ -601,13 +638,21 @@ function LandingPage() {
           <span>作品展示</span>
           <span>草稿保存</span>
         </div>
-        <p className="eyebrow">入口</p>
+        <p className="eyebrow">首页</p>
         <h1 className="glitch-title" data-text="回响">回响</h1>
-        <p className="subtitle">进入视频展示页查看作品、封面与感悟回顾。</p>
+        <p className="subtitle">从首页进入现场播放、全部内容或学生提交。</p>
         <div className="hero-actions">
+          <a className="primary-action" href="/upload">
+            <UploadCloud />
+            学生提交
+          </a>
           <a className="ghost-action" href="/display">
             <Play />
-            视频展示页
+            现场播放
+          </a>
+          <a className="ghost-action" href="/public">
+            <LibraryBig />
+            全部内容
           </a>
         </div>
         <p className="terminal-line"><i /> 先提交，再展示。</p>
@@ -622,6 +667,7 @@ function DisplayPage() {
   const [trackIndex, setTrackIndex] = useState(0);
   const [isTransitionEnabled, setIsTransitionEnabled] = useState(true);
   const [isAwaitingNext, setIsAwaitingNext] = useState(false);
+  const [isPlaybackPaused, setIsPlaybackPaused] = useState(false);
   const videoRefs = useRef<Array<HTMLVideoElement | null>>([]);
   const startLockRef = useRef(false);
 
@@ -647,6 +693,7 @@ function DisplayPage() {
     if (slides.length <= 1) return slides;
     return [...slides, slides[0]];
   }, [slides]);
+  const queuePreview = slides.slice(0, 4);
 
   useEffect(() => {
     if (!isStarted || !slides.length) return;
@@ -667,6 +714,7 @@ function DisplayPage() {
 
   useEffect(() => {
     setIsAwaitingNext(false);
+    setIsPlaybackPaused(false);
   }, [trackIndex]);
 
   function startDisplay() {
@@ -676,6 +724,40 @@ function DisplayPage() {
     setTrackIndex(0);
     setIsTransitionEnabled(true);
     setIsAwaitingNext(false);
+    setIsPlaybackPaused(false);
+  }
+
+  function stopDisplay() {
+    videoRefs.current.forEach((video) => {
+      if (video && !video.paused) video.pause();
+    });
+    startLockRef.current = false;
+    setIsStarted(false);
+    setTrackIndex(0);
+    setIsTransitionEnabled(true);
+    setIsAwaitingNext(false);
+    setIsPlaybackPaused(false);
+  }
+
+  useEffect(() => {
+    if (!isStarted) return;
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        stopDisplay();
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isStarted]);
+
+  function goPrevious() {
+    if (!slides.length) return;
+    setIsAwaitingNext(false);
+    setIsTransitionEnabled(true);
+    setTrackIndex((current) => {
+      if (current === slides.length) return Math.max(slides.length - 1, 0);
+      return current <= 0 ? Math.max(slides.length - 1, 0) : current - 1;
+    });
   }
 
   function goNext() {
@@ -713,30 +795,79 @@ function DisplayPage() {
     }
   }
 
+  function togglePlaybackPause() {
+    const activeIndex = slides.length ? trackIndex % slides.length : 0;
+    const currentVideo = videoRefs.current[activeIndex];
+    if (!currentVideo) return;
+    if (isPlaybackPaused) {
+      setIsPlaybackPaused(false);
+      playVideoIfReady(currentVideo);
+      return;
+    }
+    currentVideo.pause();
+    setIsPlaybackPaused(true);
+  }
+
   return (
     <section className={`display-page page-fade ${isStarted ? 'is-reviewing' : ''}`}>
       {!isStarted ? (
         <div className="display-header">
           <div>
             <div className="signal-pills" aria-hidden="true">
-              <span>展示模式</span>
-              <span>作品轮播</span>
-              <span>公开浏览</span>
+              <span>现场播放</span>
+              <span>手动下一位</span>
+              <span>投屏模式</span>
             </div>
-            <p className="eyebrow">视频展示</p>
-            <h1 className="glitch-title" data-text="展示">展示</h1>
-            <p className="subtitle">点击开始后，当前学生视频会自动播放，结束后点右下角“下一位”切换到下一位同学。</p>
+            <p className="eyebrow">现场播放</p>
+            <h1 className="display-page-title">播放控制台</h1>
+            <p className="subtitle">课堂投屏逐位播放；全部页用于课后浏览作品、视频和总结。</p>
+            <p className="display-count">{slides.length ? `${slides.length} 位待播放` : '等待可播放视频'}</p>
           </div>
           <div className="display-header-actions">
             <button className="ghost-action" type="button" onClick={() => void load()}>
               <RefreshCw />
               刷新数据
             </button>
+            <a className="ghost-action" href="/public">
+              <LibraryBig />
+              打开全部
+            </a>
           </div>
         </div>
       ) : null}
 
-      <div className="display-stage">
+      {!isStarted ? (
+        <div className="display-queue-strip" aria-label="现场播放队列">
+          <div>
+            <span>播放队列</span>
+            <strong>{slides.length ? `${slides.length} 位同学` : '暂无视频'}</strong>
+          </div>
+          {queuePreview.length ? (
+            <ol>
+              {queuePreview.map((slide, index) => (
+                <li key={slide.id || `${slide.fullName}-${index}`}>
+                  <span>{String(index + 1).padStart(2, '0')}</span>
+                  <strong>{slide.fullName}</strong>
+                  <small>{slide.roleLabel}</small>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p>提交页录入并上传视频后，这里会生成现场播放队列。</p>
+          )}
+        </div>
+      ) : null}
+
+      <div className={isStarted ? 'display-stage is-live' : 'display-stage is-idle'}>
+        {isStarted && slides.length ? (
+          <div className="display-review-rail">
+            <div>
+              <span>{String((trackIndex % slides.length) + 1).padStart(2, '0')} / {String(slides.length).padStart(2, '0')}</span>
+              <strong>{slides[trackIndex % slides.length]?.fullName || '回顾播放'}</strong>
+              <small>现场播放中</small>
+            </div>
+          </div>
+        ) : null}
         <div
           className={isTransitionEnabled ? 'display-track is-animated' : 'display-track'}
           style={{
@@ -751,6 +882,8 @@ function DisplayPage() {
               const isAdjacent = isStarted && Math.abs(index - trackIndex) <= 1;
               const shouldLoadVideo = !isStarted ? index === 0 : isActive || isAdjacent;
               const shouldPrioritizeCover = isActive || (!isStarted && index === 0);
+              const summaryText = slide.textSummary || '这位同学尚未填写课程总结。';
+              const shouldScrollSummary = isStarted && summaryText.length > 80;
               return (
                 <article className="display-slide" key={`${slide.id || slide.fullName}-${index}`}>
                   <div className="display-slide-grid">
@@ -813,6 +946,7 @@ function DisplayPage() {
                         <div className="display-link">作品链接待补充</div>
                       )}
                       <div className="display-meta-block">
+                        <span>{slide.workLabel}</span>
                         <strong>{slide.fullName}</strong>
                         <span>{slide.roleLabel}</span>
                       </div>
@@ -820,7 +954,12 @@ function DisplayPage() {
 
                     <div className="display-summary-strip">
                       <div className="display-summary-title">总结</div>
-                      <p>{slide.textSummary || '这位同学尚未填写职位感悟。'}</p>
+                      <p
+                        className={shouldScrollSummary ? 'is-auto-scrolling' : undefined}
+                        style={{ ['--summary-scroll-duration' as string]: getSummaryScrollDuration(summaryText) }}
+                      >
+                        {summaryText}
+                      </p>
                     </div>
                   </div>
                 </article>
@@ -854,16 +993,27 @@ function DisplayPage() {
           >
             <div className="display-start-button">
               <Play />
-              <strong>开始回顾</strong>
-              <span>点击后进入回顾模式，视频结束后在右下角点“下一位”切换。</span>
+              <strong>开始现场播放</strong>
+              <span>进入队列播放模式。视频结束后，右下角会出现“下一位”。</span>
             </div>
           </div>
         ) : null}
 
-        {isStarted && isAwaitingNext && slides.length ? (
-          <button className="display-next-button" type="button" onClick={goNext}>
-            下一位
-          </button>
+        {isStarted && slides.length ? (
+          <div className="display-control-dock" aria-label="现场播放控制">
+            <button type="button" onClick={goPrevious}>
+              <SkipBack />
+              上一位
+            </button>
+            <button type="button" onClick={togglePlaybackPause}>
+              {isPlaybackPaused ? <Play /> : <Pause />}
+              {isPlaybackPaused ? '继续' : '暂停'}
+            </button>
+            <button className={isAwaitingNext ? 'is-ready' : undefined} type="button" onClick={goNext}>
+              <SkipForward />
+              下一位
+            </button>
+          </div>
         ) : null}
       </div>
 
@@ -874,26 +1024,50 @@ function DisplayPage() {
 
 function PlaybackPage() {
   const { data, isLoading, message, load } = usePublicEventData();
-  const latestSummary = data.summaries[0];
-  const programLines = data.program.text.split(/\r?\n/).filter((line) => line.trim());
+  const [archiveView, setArchiveView] = useState<'author' | 'type'>('author');
+  const summaryCount = data.summaries.length;
+  const workCount = data.works.length;
+  const authorGroups = useMemo(() => {
+    const groups = new Map<string, { name: string; summaries: Summary[]; works: Work[] }>();
+
+    data.summaries.forEach((summary) => {
+      const name = summary.fullName || '未命名同学';
+      const group = groups.get(name) || { name, summaries: [], works: [] };
+      group.summaries.push(summary);
+      groups.set(name, group);
+    });
+
+    data.works.forEach((work) => {
+      const name = work.studentName || '未命名同学';
+      const group = groups.get(name) || { name, summaries: [], works: [] };
+      group.works.push(work);
+      groups.set(name, group);
+    });
+
+    return Array.from(groups.values());
+  }, [data.summaries, data.works]);
 
   return (
     <>
       <section className="playback-hero page-fade">
         <div className="hero-copy">
           <div className="signal-pills" aria-hidden="true">
-            <span>学生提交</span>
-            <span>作品展示</span>
-            <span>公开浏览</span>
+            <span>按作者</span>
+            <span>按类型</span>
+            <span>课后浏览</span>
           </div>
-          <p className="eyebrow">公开浏览</p>
-          <h1 className="glitch-title" data-text="回响">回响</h1>
-          <p className="subtitle">这里汇总节目单、作品和总结；提交页用于录入学生信息与作品。</p>
-          <div className="loading-track" aria-hidden="true"><span /></div>
+          <p className="eyebrow">全部内容</p>
+          <h1 className="glitch-title" data-text="全部">全部</h1>
+          <p className="subtitle">课后浏览入口，按作者或内容类型查看视频、图像和总结文本。</p>
+          <div className="public-metrics" aria-label="公开页面统计">
+            <span><strong>{summaryCount}</strong> 视频总结</span>
+            <span><strong>{workCount}</strong> 作品封面</span>
+            <span><strong>{summaryCount}</strong> 总结文本</span>
+          </div>
           <div className="hero-actions">
             <a className="primary-action" href="/display">
               <Play />
-              进入视频展示页
+              进入现场
             </a>
             <button className="ghost-action" type="button" onClick={() => void load()}>
               <RefreshCw />
@@ -905,89 +1079,112 @@ function PlaybackPage() {
       </section>
 
       <section className="archive-section playback-section">
-        <div className="section-heading">
+        <div className="section-heading archive-heading">
           <div>
-            <p className="eyebrow">公开概览</p>
-            <h2>节目单、作品与总结</h2>
+            <p className="eyebrow">内容视图</p>
+            <h2>{archiveView === 'author' ? '按作者聚合' : '按类型排列'}</h2>
+          </div>
+          <div className="archive-view-switch" aria-label="内容分类方式">
+            <button className={archiveView === 'author' ? 'active' : undefined} type="button" onClick={() => setArchiveView('author')}>
+              按作者
+            </button>
+            <button className={archiveView === 'type' ? 'active' : undefined} type="button" onClick={() => setArchiveView('type')}>
+              按类型
+            </button>
           </div>
         </div>
 
-        {latestSummary && (
-          <article className="featured-player">
-            <div>
-              <p className="eyebrow">最新总结</p>
-              <h3>{latestSummary.fullName}</h3>
-              <p>{latestSummary.textSummary || '这位同学暂未填写文本总结。'}</p>
-              <p className="meta-line">提交时间：{formatTimestamp(latestSummary.createdAt)}</p>
-            </div>
-            <MediaPlayer summary={latestSummary} featured />
-          </article>
-        )}
-
-        <div className="reflection-grid">
-          <article className="reflection-card">
-            <div className="card-index">01</div>
-            <h3>节目单</h3>
-            {programLines.length ? (
-              <ol className="program-list">
-                {programLines.map((line, index) => (
-                  <li key={`${line}-${index}`}>
-                    <span>{String(index + 1).padStart(2, '0')}</span>
-                    <p>{line}</p>
-                  </li>
-                ))}
-              </ol>
-            ) : (
-              <p>暂时还没有节目单。</p>
-            )}
-          </article>
-
-          <article className="reflection-card">
-            <div className="card-index">02</div>
-            <h3>作品列表</h3>
-            {isLoading && !data.works.length ? (
-              <p>正在载入作品列表...</p>
-            ) : data.works.length ? (
-              <div className="work-link-list">
-                {data.works.map((work) => (
-                  <a className="work-link-card" href={work.workUrl} target="_blank" rel="noreferrer" key={work.id || `${work.studentName}-${work.workUrl}`}>
-                    <img
-                      src={work.coverUrl}
-                      alt={`${work.studentName || '同学'} 作品封面`}
-                      loading="lazy"
-                      decoding="async"
-                    />
-                    <span>{work.studentName || '未命名同学'} · 作品 {work.workIndex ?? 1}</span>
-                  </a>
-                ))}
-              </div>
-            ) : (
-              <p>暂无作品数据。</p>
-            )}
-          </article>
-
-          <article className="reflection-card">
-            <div className="card-index">03</div>
-            <h3>总结列表</h3>
-            {isLoading && !data.summaries.length ? (
-              <p>正在载入总结...</p>
-            ) : data.summaries.length ? (
-              <div className="summary-link-list">
-                {data.summaries.map((summary) => (
-                  <div className="summary-item" key={summary.id}>
-                    <strong>{summary.fullName}</strong>
-                    <p>{summary.textSummary}</p>
-                    <a href={proxyMediaUrl(summary.videoSummaryUrl)} target="_blank" rel="noreferrer">
-                      查看视频总结
-                    </a>
+        {archiveView === 'author' ? (
+          <div className="archive-author-list">
+            {isLoading && !authorGroups.length ? <p className="empty-state">正在载入全部内容...</p> : null}
+            {authorGroups.map((group) => (
+              <article className="archive-author-module" key={group.name}>
+                <div className="archive-author-head">
+                  <div>
+                    <span>作者</span>
+                    <h3>{group.name}</h3>
                   </div>
-                ))}
-              </div>
-            ) : (
-              <p>暂无课程总结。</p>
-            )}
-          </article>
-        </div>
+                  <p>{group.summaries.length} 视频 / {group.works.length} 图像 / {group.summaries.length} 文本</p>
+                </div>
+                <div className="archive-author-content">
+                  <div className="summary-link-list">
+                    {group.summaries.map((summary) => (
+                      <div className="summary-item" key={summary.id}>
+                        <strong>视频总结</strong>
+                        <p>{summary.textSummary || '暂无文本总结。'}</p>
+                        <a href={proxyMediaUrl(summary.videoSummaryUrl)} target="_blank" rel="noreferrer">
+                          打开视频
+                        </a>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="work-link-list">
+                    {group.works.map((work) => (
+                      <a className="work-link-card" href={work.workUrl} target="_blank" rel="noreferrer" key={work.id || `${work.studentName}-${work.workUrl}`}>
+                        <img src={work.coverUrl} alt={`${work.studentName || '同学'} 作品封面`} loading="lazy" decoding="async" />
+                        <span>作品 {work.workIndex ?? 1}</span>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              </article>
+            ))}
+            {!isLoading && !authorGroups.length ? <p className="empty-state">暂无可浏览内容。</p> : null}
+          </div>
+        ) : (
+          <div className="archive-type-grid">
+            <article className="reflection-card">
+              <div className="card-index">Video</div>
+              <h3>视频</h3>
+              {data.summaries.length ? (
+                <div className="summary-link-list">
+                  {data.summaries.map((summary) => (
+                    <div className="summary-item" key={summary.id}>
+                      <strong>{summary.fullName}</strong>
+                      <a href={proxyMediaUrl(summary.videoSummaryUrl)} target="_blank" rel="noreferrer">
+                        打开视频总结
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p>暂无视频。</p>
+              )}
+            </article>
+            <article className="reflection-card">
+              <div className="card-index">Image</div>
+              <h3>图像</h3>
+              {data.works.length ? (
+                <div className="work-link-list">
+                  {data.works.map((work) => (
+                    <a className="work-link-card" href={work.workUrl} target="_blank" rel="noreferrer" key={work.id || `${work.studentName}-${work.workUrl}`}>
+                      <img src={work.coverUrl} alt={`${work.studentName || '同学'} 作品封面`} loading="lazy" decoding="async" />
+                      <span>{work.studentName || '未命名同学'} · 作品 {work.workIndex ?? 1}</span>
+                    </a>
+                  ))}
+                </div>
+              ) : (
+                <p>暂无图像。</p>
+              )}
+            </article>
+            <article className="reflection-card">
+              <div className="card-index">Text</div>
+              <h3>总结文本</h3>
+              {data.summaries.length ? (
+                <div className="summary-link-list">
+                  {data.summaries.map((summary) => (
+                    <div className="summary-item" key={summary.id}>
+                      <strong>{summary.fullName}</strong>
+                      <p>{summary.textSummary || '暂无文本总结。'}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p>暂无总结文本。</p>
+              )}
+            </article>
+          </div>
+        )}
       </section>
     </>
   );
@@ -1074,7 +1271,7 @@ function UploadPage() {
       const restoredForm = {
         ...cloneInitialForm(),
         ...snapshot.form,
-        roles: Array.isArray(snapshot.form.roles) ? snapshot.form.roles.filter((item) => typeof item === 'string') : [],
+        roles: normalizeRoles(snapshot.form.roles),
       };
 
       if (cancelled) {
@@ -1438,7 +1635,7 @@ function UploadPage() {
   function toggleRole(role: string) {
     setForm((current) => ({
       ...current,
-      roles: current.roles.includes(role) ? current.roles.filter((item) => item !== role) : [...current.roles, role],
+      roles: normalizeRoles(current.roles.includes(role) ? current.roles.filter((item) => item !== role) : [...current.roles, role]),
     }));
   }
 
@@ -1464,7 +1661,7 @@ function UploadPage() {
     try {
       if (!form.fullName.trim()) throw new Error('请输入学生姓名。');
       if (!form.roles.length) throw new Error('请至少选择一个工作人员职能。');
-      if (!form.textSummary.trim()) throw new Error('请输入职位感悟。');
+      if (!form.textSummary.trim()) throw new Error('请输入课程总结。');
       if (recordingState !== 'recorded') throw new Error('请先拍摄视频总结。');
       if (uploadState !== 'uploaded') {
         setMessage('正在上传视频总结...');
@@ -1478,7 +1675,7 @@ function UploadPage() {
         method: 'POST',
         body: {
           fullName: form.fullName.trim(),
-          roles: form.roles,
+          roles: normalizeRoles(form.roles),
           textSummary: form.textSummary.trim(),
           videoSummaryUrl: form.videoSummaryUrl.trim(),
           videoUploadId: form.uploadId,
@@ -1531,16 +1728,13 @@ function UploadPage() {
   return (
     <section className="upload-page page-fade">
       <div className="upload-intro">
-        <div className="signal-pills" aria-hidden="true">
-          <span>学生提交</span>
-          <span>作品封面</span>
-          <span>视频总结</span>
-        </div>
         <p className="eyebrow">提交页</p>
-        <h1 className="glitch-title upload-title" data-text="上传">上传</h1>
-        <p className="subtitle">填写姓名、职能、作品链接和封面，再录制并保存视频总结。</p>
-        <div className="hero-actions">
-          <a className="ghost-action" href="/">返回入口页</a>
+        <h1 className="upload-title">学生提交</h1>
+        <p className="subtitle">一次提交姓名、职能、视频总结和作品封面。</p>
+        <div className="upload-status-strip" aria-label="提交内容">
+          <span>身份</span>
+          <span>视频</span>
+          <span>作品</span>
         </div>
         <p className="terminal-line"><i /> {statusText}</p>
       </div>
@@ -1548,25 +1742,61 @@ function UploadPage() {
       <form className="upload-console" onSubmit={handleSubmit}>
         <div className="console-heading">
           <div>
-            <p className="eyebrow">填写信息</p>
-            <h2>管理提交页</h2>
+            <p className="eyebrow">提交内容</p>
+            <h2>提交作品</h2>
           </div>
-          <UploadCloud aria-hidden="true" />
         </div>
 
-        <label className="field-label" htmlFor="student-name">学生姓名</label>
-        <div className="input-wrap">
-          <UserRound aria-hidden="true" />
-          <input
-            id="student-name"
-            value={form.fullName}
-            onChange={(event) => setForm((current) => ({ ...current, fullName: event.target.value }))}
-            placeholder="请输入姓名"
-            required
-          />
+        <div className="identity-role-grid">
+          <div className="identity-field">
+            <label className="field-label" htmlFor="student-name">学生姓名</label>
+            <div className="input-wrap">
+              <UserRound aria-hidden="true" />
+              <input
+                id="student-name"
+                value={form.fullName}
+                onChange={(event) => setForm((current) => ({ ...current, fullName: event.target.value }))}
+                placeholder="请输入姓名"
+                required
+              />
+            </div>
+          </div>
+
+          <div className="role-field">
+            <div className="role-field-head">
+              <span className="field-label">工作人员职能</span>
+              <span>{form.roles.length ? `已选 ${form.roles.length}` : '至少 1 项'}</span>
+            </div>
+            <div className="role-chip-grid">
+              {roleOptions.map((role) => (
+                <button
+                  className={form.roles.includes(role) ? 'role-chip selected' : 'role-chip'}
+                  type="button"
+                  key={role}
+                  onClick={() => toggleRole(role)}
+                >
+                  {role}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
+
+        <label className="field-label" htmlFor="reflection-note">课程总结</label>
+        <textarea
+          id="reflection-note"
+          value={form.textSummary}
+          onChange={(event) => setForm((current) => ({ ...current, textSummary: event.target.value }))}
+          placeholder="写下这门课程中的收获、反思和想记录的内容"
+          rows={3}
+          required
+        />
 
         <div className="camera-recorder">
+          <div className="subsection-heading">
+            <span>视频总结</span>
+            <small>录制后上传</small>
+          </div>
           <div className="camera-preview">
             {recordedUrl || form.videoSummaryUrl ? (
               <video src={recordedUrl || form.videoSummaryUrl} controls playsInline autoPlay />
@@ -1618,6 +1848,10 @@ function UploadPage() {
           </div>
         </div>
 
+        <div className="subsection-heading">
+          <span>作品信息</span>
+          <small>链接 + 封面</small>
+        </div>
         <div className="work-upload-grid">
           {workSlots.map((slot, index) => (
             <div className="work-upload-card" key={index}>
@@ -1655,15 +1889,15 @@ function UploadPage() {
                   <>
                     <img className="work-upload-preview" src={slot.previewUrl} alt={`作品封面 ${index + 1} 预览`} />
                     <strong>{slot.fileName}</strong>
-                    <em>封面会随提交一起写入，不需要再手填图片链接。</em>
+                    <em>封面将随作品一起提交。</em>
                   </>
                 ) : (
                   <>
                     <span className="upload-icon" aria-hidden="true">
                       <UploadCloud />
                     </span>
-                    <strong>点击选择本地封面</strong>
-                    <em>支持 JPG / PNG / WebP / GIF，提交时会自动编码后写入作品封面。</em>
+                    <strong>选择封面</strong>
+                    <em>支持常见图片格式。</em>
                   </>
                 )}
               </label>
@@ -1683,33 +1917,7 @@ function UploadPage() {
           ))}
         </div>
 
-        <div className="role-field">
-          <span className="field-label">工作人员职能（可多选）</span>
-          <div className="role-chip-grid">
-            {roleOptions.map((role) => (
-              <button
-                className={form.roles.includes(role) ? 'role-chip selected' : 'role-chip'}
-                type="button"
-                key={role}
-                onClick={() => toggleRole(role)}
-              >
-                {role}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <label className="field-label" htmlFor="reflection-note">职位感悟</label>
-        <textarea
-          id="reflection-note"
-          value={form.textSummary}
-          onChange={(event) => setForm((current) => ({ ...current, textSummary: event.target.value }))}
-          placeholder="写下你在本次岗位中的感悟与反思"
-          rows={4}
-          required
-        />
-
-        <p className="form-message">至少填写一组作品链接，并为该作品上传本地封面。封面会自动压缩后写入提交内容。</p>
+        <p className="form-message">至少提交 1 组作品链接和封面。</p>
         {message && <p className={`form-message ${uploadState === 'error' || submitState === 'error' ? 'is-error' : ''}`}>{message}</p>}
 
         <button className="primary-action" type="submit" disabled={submitState === 'submitting'}>
