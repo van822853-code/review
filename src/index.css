@@ -1806,6 +1806,47 @@ textarea:focus {
   text-decoration: underline;
 }
 
+.summary-open-button {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  color: #8ef7ff;
+  background: transparent;
+  font: inherit;
+  text-decoration: none;
+}
+
+.summary-open-button:hover,
+.summary-open-button:focus-visible {
+  text-decoration: underline;
+  outline: none;
+}
+
+.summary-detail-view {
+  display: grid;
+  gap: 16px;
+}
+
+.summary-detail-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.summary-detail-header strong {
+  display: block;
+  color: #f7fcff;
+  font-size: 1.15rem;
+}
+
+.summary-detail-text {
+  margin: 0;
+  color: rgba(226, 247, 255, 0.72);
+  line-height: 1.7;
+}
+
 .media-shell {
   position: relative;
   min-width: 0;

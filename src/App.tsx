@@ -1046,6 +1046,11 @@ function PlaybackPage() {
 
     return Array.from(groups.values());
   }, [data.summaries, data.works]);
+  const [activeSummaryId, setActiveSummaryId] = useState('');
+  const activeSummary = useMemo(
+    () => data.summaries.find((summary) => summary.id === activeSummaryId) || null,
+    [activeSummaryId, data.summaries],
+  );
 
   return (
     <>
@@ -1094,7 +1099,23 @@ function PlaybackPage() {
           </div>
         </div>
 
-        {archiveView === 'author' ? (
+        {activeSummary ? (
+          <article className="reflection-card">
+            <div className="summary-detail-view">
+              <div className="summary-detail-header">
+                <button className="ghost-action" type="button" onClick={() => setActiveSummaryId('')}>
+                  返回
+                </button>
+                <div>
+                  <p className="eyebrow">作者聚合</p>
+                  <strong>{activeSummary.fullName}</strong>
+                </div>
+              </div>
+              <MediaPlayer summary={activeSummary} featured />
+              <p className="summary-detail-text">{activeSummary.textSummary || '这位同学暂未填写文本总结。'}</p>
+            </div>
+          </article>
+        ) : archiveView === 'author' ? (
           <div className="archive-author-list">
             {isLoading && !authorGroups.length ? <p className="empty-state">正在载入全部内容...</p> : null}
             {authorGroups.map((group) => (
@@ -1112,9 +1133,9 @@ function PlaybackPage() {
                       <div className="summary-item" key={summary.id}>
                         <strong>视频总结</strong>
                         <p>{summary.textSummary || '暂无文本总结。'}</p>
-                        <a href={proxyMediaUrl(summary.videoSummaryUrl)} target="_blank" rel="noreferrer">
+                        <button className="summary-open-button" type="button" onClick={() => setActiveSummaryId(summary.id)}>
                           打开视频
-                        </a>
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -1141,9 +1162,9 @@ function PlaybackPage() {
                   {data.summaries.map((summary) => (
                     <div className="summary-item" key={summary.id}>
                       <strong>{summary.fullName}</strong>
-                      <a href={proxyMediaUrl(summary.videoSummaryUrl)} target="_blank" rel="noreferrer">
+                      <button className="summary-open-button" type="button" onClick={() => setActiveSummaryId(summary.id)}>
                         打开视频总结
-                      </a>
+                      </button>
                     </div>
                   ))}
                 </div>
